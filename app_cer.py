@@ -32,13 +32,11 @@ def cargar_datos_cer():
     df_indice = pd.read_excel(xls, sheet_name='CER')
     df_feriados = pd.read_excel(xls, sheet_name='Feriados')
 
-    # Limpieza de nombres de columnas
     df_lec.columns = df_lec.columns.str.strip()
     df_cer.columns = df_cer.columns.str.strip()
     df_precios.columns = df_precios.columns.str.strip()
     df_indice.columns = df_indice.columns.str.strip()
 
-    # Carga de la hoja Tamar (si existe)
     df_tamar = pd.DataFrame()
     hojas_tamar = [h for h in xls.sheet_names if 'TAMAR' in h.upper()]
     if hojas_tamar:
@@ -195,70 +193,29 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
     }
 
 # =========================================================
-# 3. TABLA DE RESUMEN GENERAL (SIMPLIFICADA Y ORDENADA POR VTO)
+# 3. BARRA LATERAL (PARÁMETROS Y LIQUIDACIÓN)
 # =========================================================
 ultima_fila = df_precios.iloc[-1]
 fecha_sim = ultima_fila['Fecha_dt']
 
-resumen_list = []
-for p in pares:
-    t_lec, t_cer = p['ticker_lec'], p['ticker_cer']
-    val_l_r = ultima_fila[t_lec] if t_lec in ultima_fila else None
-    val_c_r = ultima_fila[t_cer] if t_cer in ultima_fila else None
-    
-    if pd.notnull(val_l_r) and pd.notnull(val_c_r):
-        px_l = val_l_r * 100 if val_l_r < 10 else val_l_r
-        px_c = val_c_r * 100 if val_c_r < 10 else val_c_r
-        r_all = calcular_be_cer(t_lec, t_cer, px_l, px_c, fecha_sim, df_lec, df_cer, df_indice, feriados)
-        if r_all:
-            resumen_list.append({
-                'Vencimiento_dt': p['vencimiento'],
-                'Vencimiento': p['vencimiento'].strftime('%d/%m/%Y'),
-                'Tasa Fija': t_lec,
-                'CER': t_cer,
-                'TEM BE (%)': r_all['tem_be'] * 100,
-                'TEA BE (%)': r_all['tea_be'] * 100
-            })
-
-df_resumen = pd.DataFrame(resumen_list)
-if not df_resumen.empty:
-    df_resumen = df_resumen.sort_values('Vencimiento_dt').reset_index(drop=True)
-
-st.subheader("Resumen de Mercado: Break-Even por Vencimiento")
-st.caption(f"Calculado al último cierre disponible ({fecha_sim.strftime('%d/%m/%Y')}):")
-
-if not df_resumen.empty:
-    df_tabla_show = df_resumen[['Vencimiento', 'Tasa Fija', 'CER', 'TEM BE (%)', 'TEA BE (%)']]
-    
-    st.dataframe(
-        df_tabla_show.style.format({
-            'TEM BE (%)': '{:.2f}%',
-            'TEA BE (%)': '{:.2f}%'
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
-
-st.markdown("---")
-
-# =========================================================
-# 4. BARRA LATERAL Y DETALLE DE ESPECIE
-# =========================================================
 st.sidebar.header("Parámetros de Simulación")
 st.sidebar.write(f"**Fecha del último dato:** {fecha_sim.strftime('%d/%m/%Y')}")
 
-# Ordenar las opciones de la barra lateral por vencimiento
+# Selector de Plazo de Liquidación
+plazo_opciones = {"T+0 (Contado Inmediato)": 0, "T+1 (24hs)": 1, "T+2 (48hs)": 2}
+plazo_label = st.sidebar.selectbox("Plazo de Liquidación:", list(plazo_opciones.keys()), index=1)
+plazo_t_selected = plazo_opciones[plazo_label]
+
 pares_ordenados = sorted(pares, key=lambda x: x['vencimiento'])
 opciones_labels = [p['label'] for p in pares_ordenados]
 
-# Índice por defecto para S30N6 vs X30N6
 default_idx = next(
     (i for i, p in enumerate(pares_ordenados) if p['ticker_lec'] == 'S30N6' and p['ticker_cer'] == 'X30N6'), 
     0
 )
 
 par_seleccionado_label = st.sidebar.selectbox(
-    "1. Seleccione el par a comparar:", 
+    "Seleccione el par a comparar:", 
     opciones_labels, 
     index=default_idx
 )
@@ -292,13 +249,54 @@ else:
     f_desde, f_hasta = fecha_min_gen, fecha_max_gen
 
 # =========================================================
+# 4. TABLA DE RESUMEN GENERAL (CON EL PLAZO SELECCIONADO)
+# =========================================================
+resumen_list = []
+for p in pares_ordenados:
+    t_lec, t_cer = p['ticker_lec'], p['ticker_cer']
+    val_l_r = ultima_fila[t_lec] if t_lec in ultima_fila else None
+    val_c_r = ultima_fila[t_cer] if t_cer in ultima_fila else None
+    
+    if pd.notnull(val_l_r) and pd.notnull(val_c_r):
+        px_l = val_l_r * 100 if val_l_r < 10 else val_l_r
+        px_c = val_c_r * 100 if val_c_r < 10 else val_c_r
+        r_all = calcular_be_cer(t_lec, t_cer, px_l, px_c, fecha_sim, df_lec, df_cer, df_indice, feriados, plazo_t=plazo_t_selected)
+        if r_all:
+            resumen_list.append({
+                'Vencimiento_dt': p['vencimiento'],
+                'Vencimiento': p['vencimiento'].strftime('%d/%m/%Y'),
+                'Tasa Fija': t_lec,
+                'CER': t_cer,
+                'TEM BE (%)': r_all['tem_be'] * 100,
+                'TEA BE (%)': r_all['tea_be'] * 100
+            })
+
+df_resumen = pd.DataFrame(resumen_list)
+
+st.subheader("Resumen de Mercado: Break-Even por Vencimiento")
+st.caption(f"Calculado al último cierre disponible ({fecha_sim.strftime('%d/%m/%Y')}) en **{plazo_label}**:")
+
+if not df_resumen.empty:
+    df_tabla_show = df_resumen[['Vencimiento', 'Tasa Fija', 'CER', 'TEM BE (%)', 'TEA BE (%)']]
+    st.dataframe(
+        df_tabla_show.style.format({
+            'TEM BE (%)': '{:.2f}%',
+            'TEA BE (%)': '{:.2f}%'
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
+st.markdown("---")
+
+# =========================================================
 # 5. EJECUCIÓN Y RENDERIZADO DETALLADO
 # =========================================================
 res_sim = calcular_be_cer(lec_ticker, cer_ticker, precio_lec_sim, precio_cer_sim, fecha_sim, 
-                          df_lec, df_cer, df_indice, feriados)
+                          df_lec, df_cer, df_indice, feriados, plazo_t=plazo_t_selected)
 
 if res_sim:
-    st.subheader(f"Análisis Detallado: {lec_ticker} vs {cer_ticker} (Vto: {par_info['vencimiento'].strftime('%d/%m/%Y')})")
+    st.subheader(f"Análisis Detallado: {lec_ticker} vs {cer_ticker} (Vto: {par_info['vencimiento'].strftime('%d/%m/%Y')} - {plazo_label})")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric(label=f"TEA Fija ({lec_ticker})", value=f"{res_sim['tir_lec']*100:.2f}%")
     c2.metric(label=f"Tasa Real CER ({cer_ticker})", value=f"{res_sim['tir_real_cer']*100:.2f}%")
@@ -319,7 +317,7 @@ for _, row in df_precios_filt.iterrows():
         p_l = p_l_raw * 100 if p_l_raw < 10 else p_l_raw
         p_c = p_c_raw * 100 if p_c_raw < 10 else p_c_raw
         
-        r = calcular_be_cer(lec_ticker, cer_ticker, p_l, p_c, f_o, df_lec, df_cer, df_indice, feriados)
+        r = calcular_be_cer(lec_ticker, cer_ticker, p_l, p_c, f_o, df_lec, df_cer, df_indice, feriados, plazo_t=plazo_t_selected)
         if r:
             if not df_tamar.empty:
                 tamar_sub = df_tamar[df_tamar['Fecha_dt'] <= f_o]
@@ -341,9 +339,7 @@ if not df_hist.empty:
     df_hist['tea_be_pct'] = df_hist['tea_be'] * 100
     df_hist['tir_real_cer_pct'] = df_hist['tir_real_cer'] * 100
 
-    # ---------------------------------------------------------
-    # GRÁFICO 1: TEM BE (Inflación Mensual Implícita)
-    # ---------------------------------------------------------
+    # 1. TEM BE
     fig1 = go.Figure()
     fig1.add_trace(go.Scatter(
         x=df_hist['fecha_op'], y=df_hist['tem_be_pct'],
@@ -357,9 +353,7 @@ if not df_hist.empty:
     )
     st.plotly_chart(fig1, use_container_width=True)
 
-    # ---------------------------------------------------------
-    # GRÁFICO 2: TEA BE vs TASA REAL CER (Doble Eje)
-    # ---------------------------------------------------------
+    # 2. TEA BE vs TASA REAL CER
     fig2 = make_subplots(specs=[[{"secondary_y": True}]])
     fig2.add_trace(
         go.Scatter(
@@ -386,9 +380,7 @@ if not df_hist.empty:
     fig2.update_yaxes(title_text="<b>Tasa Real CER (%)</b>", secondary_y=True, title_font_color='#2ca02c')
     st.plotly_chart(fig2, use_container_width=True)
 
-    # ---------------------------------------------------------
-    # GRÁFICO 3: TEA BE vs TASA TAMAR (Doble Eje)
-    # ---------------------------------------------------------
+    # 3. TEA BE vs TAMAR
     fig3 = make_subplots(specs=[[{"secondary_y": True}]])
     fig3.add_trace(
         go.Scatter(
