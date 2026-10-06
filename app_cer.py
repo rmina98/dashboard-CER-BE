@@ -1,8 +1,9 @@
-import os
 import calendar
-from datetime import datetime, date, timedelta
-import pandas as pd
+from datetime import date, datetime, timedelta
+import os
+
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
@@ -13,358 +14,523 @@ import streamlit as st
 st.set_page_config(page_title="Dashboard Inflación BE (CER)", layout="wide")
 st.title("Dashboard: Inflación Implícita Break-Even (Tasa Fija vs CER)")
 
+
 # =========================================================
 # 1. CARGA Y PREPARACIÓN DE DATOS
 # =========================================================
 @st.cache_data
 def cargar_datos_cer():
-    archivos = ["Inputs CER_2.xlsx", "Inputs CER.xlsx", "inputs cer.xlsx"]
-    file_path = next((a for a in archivos if os.path.exists(a)), None)
-            
-    if file_path is None:
-        st.error("Error: No se encontró el archivo 'Inputs CER_2.xlsx' ni 'Inputs CER.xlsx' en el directorio.")
-        st.stop()
-        
-    xls = pd.ExcelFile(file_path)
-    df_lec = pd.read_excel(xls, sheet_name='Lecaps')
-    df_cer = pd.read_excel(xls, sheet_name='LECER')
-    df_precios = pd.read_excel(xls, sheet_name='Precios')
-    df_indice = pd.read_excel(xls, sheet_name='CER')
-    df_feriados = pd.read_excel(xls, sheet_name='Feriados')
+  archivos = ["Inputs CER_2.xlsx", "Inputs CER.xlsx", "inputs cer.xlsx"]
+  file_path = next((a for a in archivos if os.path.exists(a)), None)
 
-    # Limpieza de nombres de columnas
-    df_lec.columns = df_lec.columns.str.strip()
-    df_cer.columns = df_cer.columns.str.strip()
-    df_precios.columns = df_precios.columns.str.strip()
-    df_indice.columns = df_indice.columns.str.strip()
+  if file_path is None:
+    st.error(
+        "Error: No se encontró el archivo 'Inputs CER_2.xlsx' ni 'Inputs"
+        " CER.xlsx' en el directorio."
+    )
+    st.stop()
 
-    # Carga de la hoja Tamar (si existe)
-    df_tamar = pd.DataFrame()
-    hojas_tamar = [h for h in xls.sheet_names if 'TAMAR' in h.upper()]
-    if hojas_tamar:
-        df_tamar = pd.read_excel(xls, sheet_name=hojas_tamar[0])
-        df_tamar.columns = df_tamar.columns.str.strip()
-        col_f = next((c for c in df_tamar.columns if 'FECHA' in c.upper()), df_tamar.columns[0])
-        col_v = next((c for c in df_tamar.columns if c != col_f), df_tamar.columns[-1])
-        df_tamar['Fecha_dt'] = pd.to_datetime(df_tamar[col_f]).dt.date
-        df_tamar['Tamar_val'] = pd.to_numeric(df_tamar[col_v], errors='coerce')
-        df_tamar['Tamar_pct'] = df_tamar['Tamar_val'].apply(lambda v: v * 100 if pd.notnull(v) and v < 1.0 else v)
-        df_tamar = df_tamar.sort_values('Fecha_dt').reset_index(drop=True)
+  xls = pd.ExcelFile(file_path)
+  df_lec = pd.read_excel(xls, sheet_name="Lecaps")
+  df_cer = pd.read_excel(xls, sheet_name="LECER")
+  df_precios = pd.read_excel(xls, sheet_name="Precios")
+  df_indice = pd.read_excel(xls, sheet_name="CER")
+  df_feriados = pd.read_excel(xls, sheet_name="Feriados")
 
-    if 'Tamar' in df_indice.columns and 'CER' not in df_indice.columns:
-        df_indice.rename(columns={'Tamar': 'CER'}, inplace=True)
-        
-    feriados = set(pd.to_datetime(df_feriados["Feriados"]).dt.date)
-    df_indice['Fecha'] = pd.to_datetime(df_indice['Fecha']).dt.date
-    df_indice = df_indice.sort_values('Fecha').reset_index(drop=True)
-    df_precios['Fecha_dt'] = pd.to_datetime(df_precios['Fecha']).dt.date
+  # Limpieza de nombres de columnas
+  df_lec.columns = df_lec.columns.str.strip()
+  df_cer.columns = df_cer.columns.str.strip()
+  df_precios.columns = df_precios.columns.str.strip()
+  df_indice.columns = df_indice.columns.str.strip()
 
-    df_lec['Vencimiento_dt'] = pd.to_datetime(df_lec['Vencimiento']).dt.date
-    df_cer['Vencimiento_dt'] = pd.to_datetime(df_cer['Vencimiento']).dt.date
+  # Carga de la hoja Tamar (si existe)
+  df_tamar = pd.DataFrame()
+  hojas_tamar = [h for h in xls.sheet_names if "TAMAR" in h.upper()]
+  if hojas_tamar:
+    df_tamar = pd.read_excel(xls, sheet_name=hojas_tamar[0])
+    df_tamar.columns = df_tamar.columns.str.strip()
+    col_f = next(
+        (c for c in df_tamar.columns if "FECHA" in c.upper()),
+        df_tamar.columns[0],
+    )
+    col_v = next(
+        (c for c in df_tamar.columns if c != col_f), df_tamar.columns[-1]
+    )
+    df_tamar["Fecha_dt"] = pd.to_datetime(df_tamar[col_f]).dt.date
+    df_tamar["Tamar_val"] = pd.to_numeric(df_tamar[col_v], errors="coerce")
+    df_tamar["Tamar_pct"] = df_tamar["Tamar_val"].apply(
+        lambda v: v * 100 if pd.notnull(v) and v < 1.0 else v
+    )
+    df_tamar = df_tamar.sort_values("Fecha_dt").reset_index(drop=True)
 
-    pares = []
-    for _, row_lec in df_lec.iterrows():
-        vto = row_lec['Vencimiento_dt']
-        matching_cer = df_cer[df_cer['Vencimiento_dt'] == vto]
-        if not matching_cer.empty:
-            for _, row_cer in matching_cer.iterrows():
-                pares.append({
-                    'label': f"{row_lec['Ticker']} vs {row_cer['Ticker']} (Vto: {vto.strftime('%d/%m/%Y')})",
-                    'ticker_lec': str(row_lec['Ticker']).strip().upper(),
-                    'ticker_cer': str(row_cer['Ticker']).strip().upper(),
-                    'vencimiento': vto
-                })
+  if "Tamar" in df_indice.columns and "CER" not in df_indice.columns:
+    df_indice.rename(columns={"Tamar": "CER"}, inplace=True)
 
-    return df_lec, df_cer, df_precios, df_indice, df_tamar, feriados, pares
+  feriados = set(pd.to_datetime(df_feriados["Feriados"]).dt.date)
+  df_indice["Fecha"] = pd.to_datetime(df_indice["Fecha"]).dt.date
+  df_indice = df_indice.sort_values("Fecha").reset_index(drop=True)
+  df_precios["Fecha_dt"] = pd.to_datetime(df_precios["Fecha"]).dt.date
 
-df_lec, df_cer, df_precios, df_indice, df_tamar, feriados, pares = cargar_datos_cer()
+  df_lec["Vencimiento_dt"] = pd.to_datetime(df_lec["Vencimiento"]).dt.date
+  df_cer["Vencimiento_dt"] = pd.to_datetime(df_cer["Vencimiento"]).dt.date
+
+  pares = []
+  for _, row_lec in df_lec.iterrows():
+    vto = row_lec["Vencimiento_dt"]
+    matching_cer = df_cer[df_cer["Vencimiento_dt"] == vto]
+    if not matching_cer.empty:
+      for _, row_cer in matching_cer.iterrows():
+        pares.append({
+            "label": (
+                f"{row_lec['Ticker']} vs {row_cer['Ticker']} (Vto:"
+                f" {vto.strftime('%d/%m/%Y')})"
+            ),
+            "ticker_lec": str(row_lec["Ticker"]).strip().upper(),
+            "ticker_cer": str(row_cer["Ticker"]).strip().upper(),
+            "vencimiento": vto,
+        })
+
+  return df_lec, df_cer, df_precios, df_indice, df_tamar, feriados, pares
+
+
+df_lec, df_cer, df_precios, df_indice, df_tamar, feriados, pares = (
+    cargar_datos_cer()
+)
 
 if not pares:
-    st.error("Error: No se encontraron pares de Lecap y LECER con la misma fecha de vencimiento.")
-    st.stop()
+  st.error(
+      "Error: No se encontraron pares de Lecap y LECER con la misma fecha de"
+      " vencimiento."
+  )
+  st.stop()
+
 
 # =========================================================
 # 2. FUNCIONES DE CALENDARIO Y CÁLCULO FINANCIAL MOTOR
 # =========================================================
 def es_habil(f, feriados):
-    return f.weekday() < 5 and f not in feriados
+  return f.weekday() < 5 and f not in feriados
+
 
 def proximo_habil(f, feriados):
-    actual = f
-    while not es_habil(actual, feriados):
-        actual += timedelta(days=1)
-    return actual
+  actual = f
+  while not es_habil(actual, feriados):
+    actual += timedelta(days=1)
+  return actual
+
 
 def calcular_fecha_liq(f_op, plazo_t, feriados):
-    actual = f_op
-    sumados = 0
-    while sumados < plazo_t:
-        actual += timedelta(days=1)
-        if es_habil(actual, feriados):
-            sumados += 1
-    return proximo_habil(actual, feriados)
+  actual = f_op
+  sumados = 0
+  while sumados < plazo_t:
+    actual += timedelta(days=1)
+    if es_habil(actual, feriados):
+      sumados += 1
+  return proximo_habil(actual, feriados)
+
 
 def restar_dias_habiles(f, dias_a_restar, feriados):
-    actual = f
-    restados = 0
-    while restados < dias_a_restar:
-        actual -= timedelta(days=1)
-        if es_habil(actual, feriados):
-            restados += 1
-    return actual
+  actual = f
+  restados = 0
+  while restados < dias_a_restar:
+    actual -= timedelta(days=1)
+    if es_habil(actual, feriados):
+      restados += 1
+  return actual
+
 
 def dias360_excel(f_inicio, f_fin):
-    d1, m1, y1 = f_inicio.day, f_inicio.month, f_inicio.year
-    d2, m2, y2 = f_fin.day, f_fin.month, f_fin.year
-    if d1 == 31: d1 = 30
-    if d2 == 31 and d1 >= 30: d2 = 30
-    return (y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)
+  d1, m1, y1 = f_inicio.day, f_inicio.month, f_inicio.year
+  d2, m2, y2 = f_fin.day, f_fin.month, f_fin.year
+  if d1 == 31:
+    d1 = 30
+  if d2 == 31 and d1 >= 30:
+    d2 = 30
+  return (y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)
 
-def calcular_meses_cer_exactos(f_inicio, f_fin):
-    actual = f_inicio
-    total_meses = 0.0
-    while actual < f_fin:
-        dias_en_mes = calendar.monthrange(actual.year, actual.month)[1]
-        if actual.year == f_fin.year and actual.month == f_fin.month:
-            dias_tramo = (f_fin - actual).days
-            total_meses += dias_tramo / dias_en_mes
-            break
-        else:
-            sig_mes = date(actual.year + (1 if actual.month == 12 else 0), 1 if actual.month == 12 else actual.month + 1, 1)
-            dias_tramo = (sig_mes - actual).days
-            total_meses += dias_tramo / dias_en_mes
-            actual = sig_mes
-    return total_meses
+
+def calcular_meses_efectivos_bcra(f_inicio, f_fin):
+  """Calcula N_efectivo según la Com.
+
+  "A" 3507 del BCRA. Suma (días en el tramo / días totales del período CER) para
+  cada ventana IPC (del 16 de un mes al 15 del mes siguiente).
+  """
+  if f_inicio >= f_fin:
+    return 0.0
+
+  n_efectivo = 0.0
+  actual = f_inicio
+
+  while actual < f_fin:
+    if actual.day >= 16:
+      inicio_periodo = date(actual.year, actual.month, 16)
+      if actual.month == 12:
+        fin_periodo = date(actual.year + 1, 1, 15)
+      else:
+        fin_periodo = date(actual.year, actual.month + 1, 15)
+    else:
+      fin_periodo = date(actual.year, actual.month, 15)
+      if actual.month == 1:
+        inicio_periodo = date(actual.year - 1, 12, 16)
+      else:
+        inicio_periodo = date(actual.year, actual.month - 1, 16)
+
+    dias_totales_periodo = (fin_periodo - inicio_periodo).days + 1
+
+    fin_tramo = min(f_fin, fin_periodo)
+    dias_en_tramo = (
+        (fin_tramo - actual).days
+        if actual == f_inicio
+        else (fin_tramo - actual).days + 1
+    )
+
+    if dias_en_tramo > 0:
+      n_efectivo += dias_en_tramo / dias_totales_periodo
+
+    actual = fin_periodo + timedelta(days=1)
+
+  return n_efectivo
+
 
 def obtener_cer_referencia(df_indice, fecha_ref):
-    """
-    Busca el CER oficial en la tabla. Si la fecha requerida supera el último
-    registro cargado, calcula la tasa diaria implícita de los últimos datos del Excel
-    y proyecta los días faltantes automáticamente.
-    """
-    if df_indice.empty:
-        return 100.0
-        
-    df_sub = df_indice[df_indice['Fecha'] <= fecha_ref]
-    if not df_sub.empty and df_sub['Fecha'].iloc[-1] == fecha_ref:
-        return df_sub['CER'].iloc[-1]
-    
-    # Extrapolación con el ritmo diario del propio Excel
-    fecha_ult = df_indice['Fecha'].iloc[-1]
-    cer_ult = df_indice['CER'].iloc[-1]
-    
-    if fecha_ref > fecha_ult:
-        dias_diferencia = (fecha_ref - fecha_ult).days
-        
-        # Calcular variación diaria promedio de los últimos registros cargados en Excel
-        cant_filas = min(10, len(df_indice))
-        f_inicio_m = df_indice['Fecha'].iloc[-cant_filas]
-        c_inicio_m = df_indice['CER'].iloc[-cant_filas]
-        dias_base = (fecha_ult - f_inicio_m).days
-        
-        if dias_base > 0 and c_inicio_m > 0:
-            factor_diario = (cer_ult / c_inicio_m) ** (1.0 / dias_base)
-        else:
-            factor_diario = 1.0
-            
-        return cer_ult * (factor_diario ** dias_diferencia)
-    
-    return df_sub['CER'].iloc[-1] if not df_sub.empty else cer_ult
+  """Busca el CER oficial en la tabla.
 
-def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, df_indice, feriados, plazo_t=1):
-    row_lec = df_lec[df_lec['Ticker'].str.strip().str.upper() == ticker_lec].iloc[0]
-    row_cer = df_cer[df_cer['Ticker'].str.strip().str.upper() == ticker_cer].iloc[0]
-    
-    f_liq = calcular_fecha_liq(f_op, plazo_t, feriados)
-    f_vto_lec = pd.to_datetime(row_lec['Vencimiento']).date()
-    f_em_lec = pd.to_datetime(row_lec['Emisión']).date()
-    tem_lec = row_lec['Tasa']
-    d360_lec = dias360_excel(f_em_lec, f_vto_lec)
-    
-    vpv_lec = 100.0 * ((1 + tem_lec) ** (d360_lec / 30.0))
-    f_cobro_lec = proximo_habil(f_vto_lec, feriados)
-    dias_cartera_lec = (f_cobro_lec - f_liq).days
-    
-    if dias_cartera_lec <= 0 or p_lec <= 0: return None
-        
-    rend_lec = (vpv_lec / p_lec) - 1
-    tir_lec = ((1 + rend_lec) ** (365 / dias_cartera_lec)) - 1
-    
-    f_vto_cer = pd.to_datetime(row_cer['Vencimiento']).date()
-    f_cobro_cer = proximo_habil(f_vto_cer, feriados)
-    dias_cartera_cer = (f_cobro_cer - f_liq).days
-    
-    if dias_cartera_cer <= 0 or p_cer <= 0: return None
-        
-    pesos_requeridos_cer = p_cer * ((1 + tir_lec) ** (dias_cartera_cer / 365))
-    
-    cer_inicial_emision = row_cer['CER inicial']
-    cupon_cer = row_cer['Tasa']
-    vpv_real = 100.0 * (1 + cupon_cer)
-    cer_vto_req = (pesos_requeridos_cer / vpv_real) * cer_inicial_emision
-    
-    f_ref_vto = restar_dias_habiles(f_cobro_cer, 10, feriados)
-    f_ref_hoy = restar_dias_habiles(f_liq, 10, feriados)
-    
-    # Obtención del CER a la fecha de referencia con extrapolación automática si hiciera falta
-    cer_hoy_ref = obtener_cer_referencia(df_indice, f_ref_hoy)
-    
-    factor_real = (vpv_real * cer_hoy_ref) / (p_cer * cer_inicial_emision)
-    tir_real_cer = (factor_real ** (365.0 / dias_cartera_cer)) - 1.0 if factor_real > 0 else 0.0
+  Si la fecha requerida supera el último registro cargado, proyecta usando la
+  variación diaria implícita del tramo más reciente del Excel.
+  """
+  if df_indice.empty:
+    return 100.0
 
-    inflacion_total_be = (cer_vto_req / cer_hoy_ref) - 1
-    meses_exactos = calcular_meses_cer_exactos(f_ref_hoy, f_ref_vto)
-    
-    if meses_exactos > 0:
-        tem_be = ((1 + inflacion_total_be) ** (1.0 / meses_exactos)) - 1
-        tea_be = ((1 + inflacion_total_be) ** (12.0 / meses_exactos)) - 1
+  df_sub = df_indice[df_indice["Fecha"] <= fecha_ref]
+  if not df_sub.empty and df_sub["Fecha"].iloc[-1] == fecha_ref:
+    return df_sub["CER"].iloc[-1]
+
+  fecha_ult = df_indice["Fecha"].iloc[-1]
+  cer_ult = df_indice["CER"].iloc[-1]
+
+  if fecha_ref > fecha_ult:
+    dias_diferencia = (fecha_ref - fecha_ult).days
+    cant_filas = min(10, len(df_indice))
+    f_inicio_m = df_indice["Fecha"].iloc[-cant_filas]
+    c_inicio_m = df_indice["CER"].iloc[-cant_filas]
+    dias_base = (fecha_ult - f_inicio_m).days
+
+    if dias_base > 0 and c_inicio_m > 0:
+      factor_diario = (cer_ult / c_inicio_m) ** (1.0 / dias_base)
     else:
-        tem_be, tea_be = 0.0, 0.0
-        
-    return {
-        'fecha_op': f_op, 'vpv_lec': vpv_lec, 'tir_lec': tir_lec,
-        'pesos_req_cer': pesos_requeridos_cer, 'cer_hoy_ref': cer_hoy_ref,
-        'cer_vto_req': cer_vto_req, 'f_ref_hoy': f_ref_hoy, 'f_ref_vto': f_ref_vto,
-        'meses_exactos': meses_exactos, 'infla_total': inflacion_total_be,
-        'tem_be': tem_be, 'tea_be': tea_be, 'tir_real_cer': tir_real_cer
-    }
+      factor_diario = 1.0
+
+    return cer_ult * (factor_diario**dias_diferencia)
+
+  return df_sub["CER"].iloc[-1] if not df_sub.empty else cer_ult
+
+
+def calcular_be_cer(
+    ticker_lec,
+    ticker_cer,
+    p_lec,
+    p_cer,
+    f_op,
+    df_lec,
+    df_cer,
+    df_indice,
+    feriados,
+    plazo_t=1,
+):
+  row_lec = df_lec[df_lec["Ticker"].str.strip().str.upper() == ticker_lec].iloc[
+      0
+  ]
+  row_cer = df_cer[df_cer["Ticker"].str.strip().str.upper() == ticker_cer].iloc[
+      0
+  ]
+
+  f_liq = calcular_fecha_liq(f_op, plazo_t, feriados)
+  f_vto_lec = pd.to_datetime(row_lec["Vencimiento"]).date()
+  f_em_lec = pd.to_datetime(row_lec["Emisión"]).date()
+  tem_lec = row_lec["Tasa"]
+  d360_lec = dias360_excel(f_em_lec, f_vto_lec)
+
+  vpv_lec = 100.0 * ((1 + tem_lec) ** (d360_lec / 30.0))
+  f_cobro_lec = proximo_habil(f_vto_lec, feriados)
+  dias_cartera_lec = (f_cobro_lec - f_liq).days
+
+  if dias_cartera_lec <= 0 or p_lec <= 0:
+    return None
+
+  rend_lec = (vpv_lec / p_lec) - 1
+  tir_lec = ((1 + rend_lec) ** (365 / dias_cartera_lec)) - 1
+
+  f_vto_cer = pd.to_datetime(row_cer["Vencimiento"]).date()
+  f_cobro_cer = proximo_habil(f_vto_cer, feriados)
+  dias_cartera_cer = (f_cobro_cer - f_liq).days
+
+  if dias_cartera_cer <= 0 or p_cer <= 0:
+    return None
+
+  pesos_requeridos_cer = p_cer * ((1 + tir_lec) ** (dias_cartera_cer / 365))
+
+  cer_inicial_emision = row_cer["CER inicial"]
+  cupon_cer = row_cer["Tasa"]
+  vpv_real = 100.0 * (1 + cupon_cer)
+  cer_vto_req = (pesos_requeridos_cer / vpv_real) * cer_inicial_emision
+
+  f_ref_vto = restar_dias_habiles(f_cobro_cer, 10, feriados)
+  f_ref_hoy = restar_dias_habiles(f_liq, 10, feriados)
+
+  cer_hoy_ref = obtener_cer_referencia(df_indice, f_ref_hoy)
+
+  factor_real = (vpv_real * cer_hoy_ref) / (p_cer * cer_inicial_emision)
+  tir_real_cer = (
+      (factor_real ** (365.0 / dias_cartera_cer)) - 1.0
+      if factor_real > 0
+      else 0.0
+  )
+
+  inflacion_total_be = (cer_vto_req / cer_hoy_ref) - 1.0
+  n_efectivo = calcular_meses_efectivos_bcra(f_ref_hoy, f_ref_vto)
+
+  if n_efectivo > 0 and cer_hoy_ref > 0:
+    tem_be = ((cer_vto_req / cer_hoy_ref) ** (1.0 / n_efectivo)) - 1.0
+    tea_be = ((1.0 + tem_be) ** 12.0) - 1.0
+  else:
+    tem_be, tea_be = 0.0, 0.0
+
+  return {
+      "fecha_op": f_op,
+      "vpv_lec": vpv_lec,
+      "tir_lec": tir_lec,
+      "pesos_req_cer": pesos_requeridos_cer,
+      "cer_hoy_ref": cer_hoy_ref,
+      "cer_vto_req": cer_vto_req,
+      "f_ref_hoy": f_ref_hoy,
+      "f_ref_vto": f_ref_vto,
+      "n_efectivo": n_efectivo,
+      "infla_total": inflacion_total_be,
+      "tem_be": tem_be,
+      "tea_be": tea_be,
+      "tir_real_cer": tir_real_cer,
+  }
+
 
 # =========================================================
 # 3. BARRA LATERAL (PARÁMETROS)
 # =========================================================
 ultima_fila = df_precios.iloc[-1]
-fecha_sim = ultima_fila['Fecha_dt']
+fecha_sim = ultima_fila["Fecha_dt"]
 
 st.sidebar.header("Parámetros de Simulación")
-st.sidebar.write(f"**Fecha del último dato:** {fecha_sim.strftime('%d/%m/%Y')}")
+st.sidebar.write(
+    f"**Fecha del último dato:** {fecha_sim.strftime('%d/%m/%Y')}"
+)
 
 # Selector de Plazo de Liquidación
-plazo_opciones = {"T+0 (Contado Inmediato)": 0, "T+1 (24hs)": 1, "T+2 (48hs)": 2}
-plazo_label = st.sidebar.selectbox("Plazo de Liquidación:", list(plazo_opciones.keys()), index=1)
+plazo_opciones = {
+    "T+0 (Contado Inmediato)": 0,
+    "T+1 (24hs)": 1,
+    "T+2 (48hs)": 2,
+}
+plazo_label = st.sidebar.selectbox(
+    "Plazo de Liquidación:", list(plazo_opciones.keys()), index=1
+)
 plazo_t_selected = plazo_opciones[plazo_label]
 
 st.sidebar.markdown("---")
 
-pares_ordenados = sorted(pares, key=lambda x: x['vencimiento'])
-opciones_labels = [p['label'] for p in pares_ordenados]
+pares_ordenados = sorted(pares, key=lambda x: x["vencimiento"])
+opciones_labels = [p["label"] for p in pares_ordenados]
 
 default_idx = next(
-    (i for i, p in enumerate(pares_ordenados) if p['ticker_lec'] == 'S30N6' and p['ticker_cer'] == 'X30N6'), 
-    0
+    (
+        i
+        for i, p in enumerate(pares_ordenados)
+        if p["ticker_lec"] == "S30N6" and p["ticker_cer"] == "X30N6"
+    ),
+    0,
 )
 
 par_seleccionado_label = st.sidebar.selectbox(
-    "Seleccione el par a comparar:", 
-    opciones_labels, 
-    index=default_idx
+    "Seleccione el par a comparar:", opciones_labels, index=default_idx
 )
 
-par_info = next(p for p in pares_ordenados if p['label'] == par_seleccionado_label)
-lec_ticker = par_info['ticker_lec']
-cer_ticker = par_info['ticker_cer']
+par_info = next(p for p in pares_ordenados if p["label"] == par_seleccionado_label)
+lec_ticker = par_info["ticker_lec"]
+cer_ticker = par_info["ticker_cer"]
 
-val_l = ultima_fila[lec_ticker] if lec_ticker in df_precios.columns else 100.0
-val_c = ultima_fila[cer_ticker] if cer_ticker in df_precios.columns else 100.0
+val_l = (
+    ultima_fila[lec_ticker] if lec_ticker in df_precios.columns else 100.0
+)
+val_c = (
+    ultima_fila[cer_ticker] if cer_ticker in df_precios.columns else 100.0
+)
 
 def_p_l = float(val_l * 100 if pd.notnull(val_l) and val_l < 10 else val_l)
 def_p_c = float(val_c * 100 if pd.notnull(val_c) and val_c < 10 else val_c)
 
-precio_lec_sim = st.sidebar.number_input(f"Precio {lec_ticker} (Tasa Fija):", value=def_p_l, step=0.10, format="%.2f")
-precio_cer_sim = st.sidebar.number_input(f"Precio {cer_ticker} (CER):", value=def_p_c, step=0.10, format="%.2f")
+precio_lec_sim = st.sidebar.number_input(
+    f"Precio {lec_ticker} (Tasa Fija):",
+    value=def_p_l,
+    step=0.10,
+    format="%.2f",
+)
+precio_cer_sim = st.sidebar.number_input(
+    f"Precio {cer_ticker} (CER):", value=def_p_c, step=0.10, format="%.2f"
+)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Rango Histórico a Graficar")
-fecha_min_gen = df_precios['Fecha_dt'].min()
-fecha_max_gen = df_precios['Fecha_dt'].max()
+fecha_min_gen = df_precios["Fecha_dt"].min()
+fecha_max_gen = df_precios["Fecha_dt"].max()
 
-rango_fechas = st.sidebar.date_input("Seleccione el período:",
+rango_fechas = st.sidebar.date_input(
+    "Seleccione el período:",
     value=(fecha_min_gen, fecha_max_gen),
-    min_value=fecha_min_gen, max_value=fecha_max_gen)
+    min_value=fecha_min_gen,
+    max_value=fecha_max_gen,
+)
 
 if isinstance(rango_fechas, (tuple, list)) and len(rango_fechas) == 2:
-    f_desde, f_hasta = rango_fechas
+  f_desde, f_hasta = rango_fechas
 else:
-    f_desde, f_hasta = fecha_min_gen, fecha_max_gen
+  f_desde, f_hasta = fecha_min_gen, fecha_max_gen
 
 # =========================================================
 # 4. TABLA DE RESUMEN GENERAL POR VENCIMIENTO
 # =========================================================
 resumen_list = []
 for p in pares_ordenados:
-    t_lec, t_cer = p['ticker_lec'], p['ticker_cer']
-    val_l_r = ultima_fila[t_lec] if t_lec in ultima_fila else None
-    val_c_r = ultima_fila[t_cer] if t_cer in ultima_fila else None
-    
-    if pd.notnull(val_l_r) and pd.notnull(val_c_r):
-        px_l = val_l_r * 100 if val_l_r < 10 else val_l_r
-        px_c = val_c_r * 100 if val_c_r < 10 else val_c_r
-        r_all = calcular_be_cer(t_lec, t_cer, px_l, px_c, fecha_sim, df_lec, df_cer, df_indice, feriados, 
-                                plazo_t=plazo_t_selected)
-        if r_all:
-            resumen_list.append({
-                'Vencimiento_dt': p['vencimiento'],
-                'Vencimiento': p['vencimiento'].strftime('%d/%m/%Y'),
-                'Tasa Fija': t_lec,
-                'CER': t_cer,
-                'TEM BE (%)': r_all['tem_be'] * 100,
-                'TEA BE (%)': r_all['tea_be'] * 100
-            })
+  t_lec, t_cer = p["ticker_lec"], p["ticker_cer"]
+  val_l_r = ultima_fila[t_lec] if t_lec in ultima_fila else None
+  val_c_r = ultima_fila[t_cer] if t_cer in ultima_fila else None
+
+  if pd.notnull(val_l_r) and pd.notnull(val_c_r):
+    px_l = val_l_r * 100 if val_l_r < 10 else val_l_r
+    px_c = val_c_r * 100 if val_c_r < 10 else val_c_r
+    r_all = calcular_be_cer(
+        t_lec,
+        t_cer,
+        px_l,
+        px_c,
+        fecha_sim,
+        df_lec,
+        df_cer,
+        df_indice,
+        feriados,
+        plazo_t=plazo_t_selected,
+    )
+    if r_all:
+      resumen_list.append({
+          "Vencimiento_dt": p["vencimiento"],
+          "Vencimiento": p["vencimiento"].strftime("%d/%m/%Y"),
+          "Tasa Fija": t_lec,
+          "CER": t_cer,
+          "TEM BE (%)": r_all["tem_be"] * 100,
+          "TEA BE (%)": r_all["tea_be"] * 100,
+      })
 
 df_resumen = pd.DataFrame(resumen_list)
 
 st.subheader("Resumen de Mercado: Break-Even por Vencimiento")
-st.caption(f"Calculado al último cierre disponible ({fecha_sim.strftime('%d/%m/%Y')}) en **{plazo_label}**:")
+st.caption(
+    f"Calculado al último cierre disponible ({fecha_sim.strftime('%d/%m/%Y')})"
+    f" en **{plazo_label}**:"
+)
 
 if not df_resumen.empty:
-    df_tabla_show = df_resumen[['Vencimiento', 'Tasa Fija', 'CER', 'TEM BE (%)', 'TEA BE (%)']]
-    st.dataframe(
-        df_tabla_show.style.format({
-            'TEM BE (%)': '{:.2f}%',
-            'TEA BE (%)': '{:.2f}%'
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
+  df_tabla_show = df_resumen[
+      ["Vencimiento", "Tasa Fija", "CER", "TEM BE (%)", "TEA BE (%)"]
+  ]
+  st.dataframe(
+      df_tabla_show.style.format(
+          {"TEM BE (%)": "{:.2f}%", "TEA BE (%)": "{:.2f}%"}
+      ),
+      use_container_width=True,
+      hide_index=True,
+  )
 
 st.markdown("---")
 
 # =========================================================
 # 5. EJECUCIÓN Y RENDERIZADO DETALLADO
 # =========================================================
-res_sim = calcular_be_cer(lec_ticker, cer_ticker, precio_lec_sim, precio_cer_sim, fecha_sim, 
-                          df_lec, df_cer, df_indice, feriados, plazo_t=plazo_t_selected)
+res_sim = calcular_be_cer(
+    lec_ticker,
+    cer_ticker,
+    precio_lec_sim,
+    precio_cer_sim,
+    fecha_sim,
+    df_lec,
+    df_cer,
+    df_indice,
+    feriados,
+    plazo_t=plazo_t_selected,
+)
 
 if res_sim:
-    st.subheader(f"Análisis Detallado: {lec_ticker} vs {cer_ticker} (Vto: {par_info['vencimiento'].strftime('%d/%m/%Y')} - {plazo_label})")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric(label=f"TEA Fija ({lec_ticker})", value=f"{res_sim['tir_lec']*100:.2f}%")
-    c2.metric(label=f"Tasa Real CER ({cer_ticker})", value=f"{res_sim['tir_real_cer']*100:.2f}%")
-    c3.metric(label=f"Pesos Target ({cer_ticker})", value=f"${res_sim['pesos_req_cer']:.2f}")
-    c4.metric(label="TEM BE (Mensual)", value=f"{res_sim['tem_be']*100:.2f}%")
-    c5.metric(label="TEA BE (TEM Anualizada)", value=f"{res_sim['tea_be']*100:.2f}%")
+  st.subheader(
+      f"Análisis Detallado: {lec_ticker} vs {cer_ticker} (Vto:"
+      f" {par_info['vencimiento'].strftime('%d/%m/%Y')} - {plazo_label})"
+  )
+  c1, c2, c3, c4, c5 = st.columns(5)
+  c1.metric(
+      label=f"TEA Fija ({lec_ticker})", value=f"{res_sim['tir_lec']*100:.2f}%"
+  )
+  c2.metric(
+      label=f"Tasa Real CER ({cer_ticker})",
+      value=f"{res_sim['tir_real_cer']*100:.2f}%",
+  )
+  c3.metric(
+      label=f"Pesos Target ({cer_ticker})",
+      value=f"${res_sim['pesos_req_cer']:.2f}",
+  )
+  c4.metric(label="TEM BE (Mensual)", value=f"{res_sim['tem_be']*100:.2f}%")
+  c5.metric(
+      label="TEA BE (TEM Anualizada)", value=f"{res_sim['tea_be']*100:.2f}%"
+  )
 
 # Serie Histórica
-df_precios_filt = df_precios[(df_precios['Fecha_dt'] >= f_desde) & (df_precios['Fecha_dt'] <= f_hasta)]
+df_precios_filt = df_precios[
+    (df_precios["Fecha_dt"] >= f_desde) & (df_precios["Fecha_dt"] <= f_hasta)
+]
 historico = []
 
 for _, row in df_precios_filt.iterrows():
-    f_o = row['Fecha_dt']
-    p_l_raw = row[lec_ticker] if lec_ticker in row and pd.notnull(row[lec_ticker]) else None
-    p_c_raw = row[cer_ticker] if cer_ticker in row and pd.notnull(row[cer_ticker]) else None
-    
-    if p_l_raw is not None and p_c_raw is not None:
-        p_l = p_l_raw * 100 if p_l_raw < 10 else p_l_raw
-        p_c = p_c_raw * 100 if p_c_raw < 10 else p_c_raw
-        
-        r = calcular_be_cer(lec_ticker, cer_ticker, p_l, p_c, f_o, df_lec, df_cer, df_indice, feriados, 
-                            plazo_t=plazo_t_selected)
-        if r:
-            if not df_tamar.empty:
-                tamar_sub = df_tamar[df_tamar['Fecha_dt'] <= f_o]
-                r['tamar'] = tamar_sub['Tamar_pct'].iloc[-1] if not tamar_sub.empty else np.nan
-            else:
-                r['tamar'] = np.nan
-            historico.append(r)
+  f_o = row["Fecha_dt"]
+  p_l_raw = (
+      row[lec_ticker]
+      if lec_ticker in row and pd.notnull(row[lec_ticker])
+      else None
+  )
+  p_c_raw = (
+      row[cer_ticker]
+      if cer_ticker in row and pd.notnull(row[cer_ticker])
+      else None
+  )
+
+  if p_l_raw is not None and p_c_raw is not None:
+    p_l = p_l_raw * 100 if p_l_raw < 10 else p_l_raw
+    p_c = p_c_raw * 100 if p_c_raw < 10 else p_c_raw
+
+    r = calcular_be_cer(
+        lec_ticker,
+        cer_ticker,
+        p_l,
+        p_c,
+        f_o,
+        df_lec,
+        df_cer,
+        df_indice,
+        feriados,
+        plazo_t=plazo_t_selected,
+    )
+    if r:
+      if not df_tamar.empty:
+        tamar_sub = df_tamar[df_tamar["Fecha_dt"] <= f_o]
+        r["tamar"] = (
+            tamar_sub["Tamar_pct"].iloc[-1] if not tamar_sub.empty else np.nan
+        )
+      else:
+        r["tamar"] = np.nan
+      historico.append(r)
 
 df_hist = pd.DataFrame(historico)
 
@@ -375,76 +541,103 @@ st.markdown("---")
 st.subheader("Evolución Histórica de Métricas")
 
 if not df_hist.empty:
-    df_hist['tem_be_pct'] = df_hist['tem_be'] * 100
-    df_hist['tea_be_pct'] = df_hist['tea_be'] * 100
-    df_hist['tir_real_cer_pct'] = df_hist['tir_real_cer'] * 100
+  df_hist["tem_be_pct"] = df_hist["tem_be"] * 100
+  df_hist["tea_be_pct"] = df_hist["tea_be"] * 100
+  df_hist["tir_real_cer_pct"] = df_hist["tir_real_cer"] * 100
 
-    # 1. TEM BE
-    fig1 = go.Figure()
-    fig1.add_trace(go.Scatter(
-        x=df_hist['fecha_op'], y=df_hist['tem_be_pct'],
-        name="TEM BE (%)", line=dict(color='#d62728', width=2.5),
-        hovertemplate="<b>Fecha:</b> %{x|%d/%m/%Y}<br><b>TEM BE:</b> %{y:.2f}%<extra></extra>"
-    ))
-    fig1.update_layout(
-        title=f"<b>1. Inflación Mensual Implícita (TEM BE): {lec_ticker} vs {cer_ticker}</b>",
-        xaxis_title="Fecha", yaxis_title="TEM (%)",
-        template="plotly_white", hovermode="x unified"
-    )
-    st.plotly_chart(fig1, use_container_width=True)
+  # 1. TEM BE
+  fig1 = go.Figure()
+  fig1.add_trace(
+      go.Scatter(
+          x=df_hist["fecha_op"],
+          y=df_hist["tem_be_pct"],
+          name="TEM BE (%)",
+          line=dict(color="#d62728", width=2.5),
+          hovertemplate=(
+              "<b>Fecha:</b> %{x|%d/%m/%Y}<br><b>TEM BE:</b>"
+              " %{y:.2f}%<extra></extra>"
+          ),
+      )
+  )
+  fig1.update_layout(
+      title=(
+          "<b>1. Inflación Mensual Implícita (TEM BE):"
+          f" {lec_ticker} vs {cer_ticker}</b>"
+      ),
+      xaxis_title="Fecha",
+      yaxis_title="TEM (%)",
+      template="plotly_white",
+      hovermode="x unified",
+  )
+  st.plotly_chart(fig1, use_container_width=True)
 
-    # 2. TEA BE vs TASA REAL CER
-    fig2 = make_subplots(specs=[[{"secondary_y": True}]])
-    fig2.add_trace(
-        go.Scatter(
-            x=df_hist['fecha_op'], y=df_hist['tea_be_pct'],
-            name="TEA BE (%)", line=dict(color='#1f77b4', width=2.5),
-            hovertemplate="<b>Fecha:</b> %{x|%d/%m/%Y}<br><b>TEA BE:</b> %{y:.2f}%<extra></extra>"
-        ),
-        secondary_y=False
-    )
-    fig2.add_trace(
-        go.Scatter(
-            x=df_hist['fecha_op'], y=df_hist['tir_real_cer_pct'],
-            name=f"Tasa Real CER ({cer_ticker})", line=dict(color='#2ca02c', width=2.5, dash='solid'),
-            hovertemplate="<b>Fecha:</b> %{x|%d/%m/%Y}<br><b>Tasa Real CER:</b> %{y:.2f}%<extra></extra>"
-        ),
-        secondary_y=True
-    )
-    fig2.update_layout(
-        title=f"<b>2. Inflación Anualizada Implícita (TEA BE) vs Tasa Real CER ({cer_ticker})</b>",
-        template="plotly_white", hovermode="x unified"
-    )
-    fig2.update_xaxes(title_text="Fecha")
-    fig2.update_yaxes(title_text="<b>TEA BE (%)</b>", secondary_y=False, title_font_color='#1f77b4')
-    fig2.update_yaxes(title_text="<b>Tasa Real CER (%)</b>", secondary_y=True, title_font_color='#2ca02c')
-    st.plotly_chart(fig2, use_container_width=True)
+  # 2. TEA BE vs TASA REAL CER
+  fig2 = make_subplots(specs=[[{"secondary_y": True}]])
+  fig2.add_trace(
+      go.Scatter(
+          x=df_hist["fecha_op"],
+          y=df_hist["tea_be_pct"],
+          name="TEA BE (%)",
+          line=dict(color="#1f77b4", width=2.5),
+          hovertemplate=(
+              "<b>Fecha:</b> %{x|%d/%m/%Y}<br><b>TEA BE:</b>"
+              " %{y:.2f}%<extra></extra>"
+          ),
+      ),
+      secondary_y=False,
+  )
+  fig2.add_trace(
+      go.Scatter(
+          x=df_hist["fecha_op"],
+          y=df_hist["tir_real_cer_pct"],
+          name=f"Tasa Real CER ({cer_ticker})",
+          line=dict(color="#2ca02c", width=2.5, dash="solid"),
+          hovertemplate=(
+              "<b>Fecha:</b> %{x|%d/%m/%Y}<br><b>Tasa Real CER:</b>"
+              " %{y:.2f}%<extra></extra>"
+          ),
+      ),
+      secondary_y=True,
+  )
+  fig2.update_layout(
+      title=(
+          "<b>2. Inflación Anualizada Implícita (TEA BE) vs Tasa Real CER"
+          f" ({cer_ticker})</b>"
+      ),
+      template="plotly_white",
+      hovermode="x unified",
+  )
+  fig2.update_xaxes(title_text="Fecha")
+  fig2.update_yaxes(
+      title_text="<b>TEA BE (%)</b>",
+      secondary_y=False,
+      title_font_color="#1f77b4",
+  )
+  fig2.update_yaxes(
+      title_text="<b>Tasa Real CER (%)</b>",
+      secondary_y=True,
+      title_font_color="#2ca02c",
+  )
+  st.plotly_chart(fig2, use_container_width=True)
 
-    # 3. TEA BE vs TAMAR
-    fig3 = make_subplots(specs=[[{"secondary_y": True}]])
-    fig3.add_trace(
-        go.Scatter(
-            x=df_hist['fecha_op'], y=df_hist['tea_be_pct'],
-            name="TEA BE (%)", line=dict(color='#1f77b4', width=2.5),
-            hovertemplate="<b>Fecha:</b> %{x|%d/%m/%Y}<br><b>TEA BE:</b> %{y:.2f}%<extra></extra>"
-        ),
-        secondary_y=False
-    )
-    fig3.add_trace(
-        go.Scatter(
-            x=df_hist['fecha_op'], y=df_hist['tamar'],
-            name="Tasa TAMAR (%)", line=dict(color='#ff7f0e', width=2.5),
-            hovertemplate="<b>Fecha:</b> %{x|%d/%m/%Y}<br><b>TAMAR:</b> %{y:.2f}%<extra></extra>"
-        ),
-        secondary_y=True
-    )
-    fig3.update_layout(
-        title=f"<b>3. Inflación Anualizada Implícita (TEA BE) vs Tasa TAMAR</b>",
-        template="plotly_white", hovermode="x unified"
-    )
-    fig3.update_xaxes(title_text="Fecha")
-    fig3.update_yaxes(title_text="<b>TEA BE (%)</b>", secondary_y=False, title_font_color='#1f77b4')
-    fig3.update_yaxes(title_text="<b>Tasa TAMAR (%)</b>", secondary_y=True, title_font_color='#ff7f0e')
-    st.plotly_chart(fig3, use_container_width=True)
-else:
-    st.warning("No hay suficientes datos históricos para el rango seleccionado.")
+  # 3. TEA BE vs TAMAR
+  fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+  fig3.add_trace(
+      go.Scatter(
+          x=df_hist["fecha_op"],
+          y=df_hist["tea_be_pct"],
+          name="TEA BE (%)",
+          line=dict(color="#1f77b4", width=2.5),
+          hovertemplate=(
+              "<b>Fecha:</b> %{x|%d/%m/%Y}<br><b>TEA BE:</b>"
+              " %{y:.2f}%<extra></extra>"
+          ),
+      ),
+      secondary_y=False,
+  )
+  fig3.add_trace(
+      go.Scatter(
+          x=df_hist["fecha_op"],
+          y=df_hist["tamar"],
+          name="Tasa TAMAR (%)",
+          line=dict
