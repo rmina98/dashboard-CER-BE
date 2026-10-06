@@ -640,4 +640,30 @@ if not df_hist.empty:
           x=df_hist["fecha_op"],
           y=df_hist["tamar"],
           name="Tasa TAMAR (%)",
-          line=dict
+          line=dict(color="#ff7f0e", width=2.5),
+          hovertemplate=(
+              "<b>Fecha:</b> %{x|%d/%m/%Y}<br><b>TAMAR:</b>"
+              " %{y:.2f}%<extra></extra>"
+          ),
+      ),
+      secondary_y=True,
+  )
+  fig3.update_layout(
+      title="<b>3. Inflación Anualizada Implícita (TEA BE) vs Tasa TAMAR</b>",
+      template="plotly_white",
+      hovermode="x unified",
+  )
+  fig3.update_xaxes(title_text="Fecha")
+  fig3.update_yaxes(
+      title_text="<b>TEA BE (%)</b>",
+      secondary_y=False,
+      title_font_color="#1f77b4",
+  )
+  fig3.update_yaxes(
+      title_text="<b>Tasa TAMAR (%)</b>",
+      secondary_y=True,
+      title_font_color="#ff7f0e",
+  )
+  st.plotly_chart(fig3, use_container_width=True)
+else:
+  st.warning("No hay suficientes datos históricos para el rango seleccionado.")
