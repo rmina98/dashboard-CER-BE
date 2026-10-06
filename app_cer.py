@@ -195,7 +195,7 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
     }
 
 # =========================================================
-# 3. TABLA DE RESUMEN GENERAL (ORDENADA POR VENCIMIENTO)
+# 3. TABLA DE RESUMEN GENERAL (SIMPLIFICADA Y ORDENADA POR VTO)
 # =========================================================
 ultima_fila = df_precios.iloc[-1]
 fecha_sim = ultima_fila['Fecha_dt']
@@ -216,10 +216,6 @@ for p in pares:
                 'Vencimiento': p['vencimiento'].strftime('%d/%m/%Y'),
                 'Tasa Fija': t_lec,
                 'CER': t_cer,
-                'Precio Fija': px_l,
-                'Precio CER': px_c,
-                'TEA Fija (%)': r_all['tir_lec'] * 100,
-                'Tasa Real CER (%)': r_all['tir_real_cer'] * 100,
                 'TEM BE (%)': r_all['tem_be'] * 100,
                 'TEA BE (%)': r_all['tea_be'] * 100
             })
@@ -228,18 +224,14 @@ df_resumen = pd.DataFrame(resumen_list)
 if not df_resumen.empty:
     df_resumen = df_resumen.sort_values('Vencimiento_dt').reset_index(drop=True)
 
-st.subheader("Resumen de Mercado: Especies por Vencimiento")
-st.caption(f"Precios al último cierre disponible ({fecha_sim.strftime('%d/%m/%Y')}):")
+st.subheader("Resumen de Mercado: Break-Even por Vencimiento")
+st.caption(f"Calculado al último cierre disponible ({fecha_sim.strftime('%d/%m/%Y')}):")
 
 if not df_resumen.empty:
-    df_tabla_show = df_resumen[['Vencimiento', 'Tasa Fija', 'CER', 'Precio Fija', 'Precio CER', 'TEA Fija (%)', 'Tasa Real CER (%)', 'TEM BE (%)', 'TEA BE (%)']]
+    df_tabla_show = df_resumen[['Vencimiento', 'Tasa Fija', 'CER', 'TEM BE (%)', 'TEA BE (%)']]
     
     st.dataframe(
         df_tabla_show.style.format({
-            'Precio Fija': '${:.2f}',
-            'Precio CER': '${:.2f}',
-            'TEA Fija (%)': '{:.2f}%',
-            'Tasa Real CER (%)': '{:.2f}%',
             'TEM BE (%)': '{:.2f}%',
             'TEA BE (%)': '{:.2f}%'
         }),
@@ -255,7 +247,7 @@ st.markdown("---")
 st.sidebar.header("Parámetros de Simulación")
 st.sidebar.write(f"**Fecha del último dato:** {fecha_sim.strftime('%d/%m/%Y')}")
 
-# Ordenar las opciones de la barra lateral también por vencimiento
+# Ordenar las opciones de la barra lateral por vencimiento
 pares_ordenados = sorted(pares, key=lambda x: x['vencimiento'])
 opciones_labels = [p['label'] for p in pares_ordenados]
 
