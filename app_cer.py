@@ -136,10 +136,11 @@ def calcular_meses_cer_exactos(f_inicio, f_fin):
             actual = sig_mes
     return total_meses
 
-def obtener_cer_proyectado(df_indice, fecha_ref, tem_rem_estimada=0.020):
+def obtener_cer_referencia(df_indice, fecha_ref):
     """
-    Obtiene el CER a la fecha de referencia. Si la fecha supera el ultimo dato oficial
-    cargado en df_indice, extrapola diariamente usando la TEM esperada (REM).
+    Busca el CER oficial en la tabla. Si la fecha requerida supera el último
+    registro cargado, calcula la tasa diaria implícita de los últimos datos del Excel
+    y proyecta los días faltantes automáticamente.
     """
     if df_indice.empty:
         return 100.0
@@ -148,18 +149,29 @@ def obtener_cer_proyectado(df_indice, fecha_ref, tem_rem_estimada=0.020):
     if not df_sub.empty and df_sub['Fecha'].iloc[-1] == fecha_ref:
         return df_sub['CER'].iloc[-1]
     
-    ultimo_dato_oficial = df_indice.iloc[-1]
-    fecha_ult_oficial = ultimo_dato_oficial['Fecha']
-    cer_ult_oficial = ultimo_dato_oficial['CER']
+    # Extrapolación con el ritmo diario del propio Excel
+    fecha_ult = df_indice['Fecha'].iloc[-1]
+    cer_ult = df_indice['CER'].iloc[-1]
     
-    if fecha_ref > fecha_ult_oficial:
-        dias_a_proyectar = (fecha_ref - fecha_ult_oficial).days
-        tasa_diaria = (1.0 + tem_rem_estimada) ** (1.0 / 30.0) - 1.0
-        return cer_ult_oficial * ((1.0 + tasa_diaria) ** dias_a_proyectar)
+    if fecha_ref > fecha_ult:
+        dias_diferencia = (fecha_ref - fecha_ult).days
+        
+        # Calcular variación diaria promedio de los últimos registros cargados en Excel
+        cant_filas = min(10, len(df_indice))
+        f_inicio_m = df_indice['Fecha'].iloc[-cant_filas]
+        c_inicio_m = df_indice['CER'].iloc[-cant_filas]
+        dias_base = (fecha_ult - f_inicio_m).days
+        
+        if dias_base > 0 and c_inicio_m > 0:
+            factor_diario = (cer_ult / c_inicio_m) ** (1.0 / dias_base)
+        else:
+            factor_diario = 1.0
+            
+        return cer_ult * (factor_diario ** dias_diferencia)
     
-    return df_sub['CER'].iloc[-1] if not df_sub.empty else cer_ult_oficial
+    return df_sub['CER'].iloc[-1] if not df_sub.empty else cer_ult
 
-def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, df_indice, feriados, plazo_t=1, tem_rem=0.020):
+def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, df_indice, feriados, plazo_t=1):
     row_lec = df_lec[df_lec['Ticker'].str.strip().str.upper() == ticker_lec].iloc[0]
     row_cer = df_cer[df_cer['Ticker'].str.strip().str.upper() == ticker_cer].iloc[0]
     
@@ -194,8 +206,8 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
     f_ref_vto = restar_dias_habiles(f_cobro_cer, 10, feriados)
     f_ref_hoy = restar_dias_habiles(f_liq, 10, feriados)
     
-    # Obtención de CER hoy con extrapolación REM si cae fuera de tabla
-    cer_hoy_ref = obtener_cer_proyectado(df_indice, f_ref_hoy, tem_rem_estimada=tem_rem)
+    # Obtención del CER a la fecha de referencia con extrapolación automática si hiciera falta
+    cer_hoy_ref = obtener_cer_referencia(df_indice, f_ref_hoy)
     
     factor_real = (vpv_real * cer_hoy_ref) / (p_cer * cer_inicial_emision)
     tir_real_cer = (factor_real ** (365.0 / dias_cartera_cer)) - 1.0 if factor_real > 0 else 0.0
@@ -230,10 +242,6 @@ st.sidebar.write(f"**Fecha del último dato:** {fecha_sim.strftime('%d/%m/%Y')}"
 plazo_opciones = {"T+0 (Contado Inmediato)": 0, "T+1 (24hs)": 1, "T+2 (48hs)": 2}
 plazo_label = st.sidebar.selectbox("Plazo de Liquidación:", list(plazo_opciones.keys()), index=1)
 plazo_t_selected = plazo_opciones[plazo_label]
-
-# TEM REM estimada para extrapolación de CER fuera de tabla
-tem_rem_pct = st.sidebar.number_input("TEM Proyección CER fuera de tabla (%):", value=2.00, step=0.10, format="%.2f")
-tem_rem_selected = tem_rem_pct / 100.0
 
 st.sidebar.markdown("---")
 
@@ -291,7 +299,7 @@ for p in pares_ordenados:
         px_l = val_l_r * 100 if val_l_r < 10 else val_l_r
         px_c = val_c_r * 100 if val_c_r < 10 else val_c_r
         r_all = calcular_be_cer(t_lec, t_cer, px_l, px_c, fecha_sim, df_lec, df_cer, df_indice, feriados, 
-                                plazo_t=plazo_t_selected, tem_rem=tem_rem_selected)
+                                plazo_t=plazo_t_selected)
         if r_all:
             resumen_list.append({
                 'Vencimiento_dt': p['vencimiento'],
@@ -324,7 +332,7 @@ st.markdown("---")
 # 5. EJECUCIÓN Y RENDERIZADO DETALLADO
 # =========================================================
 res_sim = calcular_be_cer(lec_ticker, cer_ticker, precio_lec_sim, precio_cer_sim, fecha_sim, 
-                          df_lec, df_cer, df_indice, feriados, plazo_t=plazo_t_selected, tem_rem=tem_rem_selected)
+                          df_lec, df_cer, df_indice, feriados, plazo_t=plazo_t_selected)
 
 if res_sim:
     st.subheader(f"Análisis Detallado: {lec_ticker} vs {cer_ticker} (Vto: {par_info['vencimiento'].strftime('%d/%m/%Y')} - {plazo_label})")
@@ -349,7 +357,7 @@ for _, row in df_precios_filt.iterrows():
         p_c = p_c_raw * 100 if p_c_raw < 10 else p_c_raw
         
         r = calcular_be_cer(lec_ticker, cer_ticker, p_l, p_c, f_o, df_lec, df_cer, df_indice, feriados, 
-                            plazo_t=plazo_t_selected, tem_rem=tem_rem_selected)
+                            plazo_t=plazo_t_selected)
         if r:
             if not df_tamar.empty:
                 tamar_sub = df_tamar[df_tamar['Fecha_dt'] <= f_o]
