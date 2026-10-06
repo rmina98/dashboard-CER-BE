@@ -174,7 +174,6 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
     df_hist_hoy = df_indice[df_indice['Fecha'] <= f_ref_hoy]
     cer_hoy_ref = df_hist_hoy['CER'].iloc[-1] if not df_hist_hoy.empty else cer_inicial_emision
     
-    # Cálculo de Tasa Real del CER (TIR Real Anualizada del LECER)
     factor_real = (vpv_real * cer_hoy_ref) / (p_cer * cer_inicial_emision)
     tir_real_cer = (factor_real ** (365.0 / dias_cartera_cer)) - 1.0 if factor_real > 0 else 0.0
 
@@ -196,29 +195,83 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
     }
 
 # =========================================================
-# 3. INTERFAZ Y BARRA LATERAL
+# 3. TABLA DE RESUMEN GENERAL (ORDENADA POR VENCIMIENTO)
 # =========================================================
 ultima_fila = df_precios.iloc[-1]
 fecha_sim = ultima_fila['Fecha_dt']
 
+resumen_list = []
+for p in pares:
+    t_lec, t_cer = p['ticker_lec'], p['ticker_cer']
+    val_l_r = ultima_fila[t_lec] if t_lec in ultima_fila else None
+    val_c_r = ultima_fila[t_cer] if t_cer in ultima_fila else None
+    
+    if pd.notnull(val_l_r) and pd.notnull(val_c_r):
+        px_l = val_l_r * 100 if val_l_r < 10 else val_l_r
+        px_c = val_c_r * 100 if val_c_r < 10 else val_c_r
+        r_all = calcular_be_cer(t_lec, t_cer, px_l, px_c, fecha_sim, df_lec, df_cer, df_indice, feriados)
+        if r_all:
+            resumen_list.append({
+                'Vencimiento_dt': p['vencimiento'],
+                'Vencimiento': p['vencimiento'].strftime('%d/%m/%Y'),
+                'Tasa Fija': t_lec,
+                'CER': t_cer,
+                'Precio Fija': px_l,
+                'Precio CER': px_c,
+                'TEA Fija (%)': r_all['tir_lec'] * 100,
+                'Tasa Real CER (%)': r_all['tir_real_cer'] * 100,
+                'TEM BE (%)': r_all['tem_be'] * 100,
+                'TEA BE (%)': r_all['tea_be'] * 100
+            })
+
+df_resumen = pd.DataFrame(resumen_list)
+if not df_resumen.empty:
+    df_resumen = df_resumen.sort_values('Vencimiento_dt').reset_index(drop=True)
+
+st.subheader("Resumen de Mercado: Especies por Vencimiento")
+st.caption(f"Precios al último cierre disponible ({fecha_sim.strftime('%d/%m/%Y')}):")
+
+if not df_resumen.empty:
+    df_tabla_show = df_resumen[['Vencimiento', 'Tasa Fija', 'CER', 'Precio Fija', 'Precio CER', 'TEA Fija (%)', 'Tasa Real CER (%)', 'TEM BE (%)', 'TEA BE (%)']]
+    
+    st.dataframe(
+        df_tabla_show.style.format({
+            'Precio Fija': '${:.2f}',
+            'Precio CER': '${:.2f}',
+            'TEA Fija (%)': '{:.2f}%',
+            'Tasa Real CER (%)': '{:.2f}%',
+            'TEM BE (%)': '{:.2f}%',
+            'TEA BE (%)': '{:.2f}%'
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
+st.markdown("---")
+
+# =========================================================
+# 4. BARRA LATERAL Y DETALLE DE ESPECIE
+# =========================================================
 st.sidebar.header("Parámetros de Simulación")
 st.sidebar.write(f"**Fecha del último dato:** {fecha_sim.strftime('%d/%m/%Y')}")
 
-opciones_labels = [p['label'] for p in pares]
+# Ordenar las opciones de la barra lateral también por vencimiento
+pares_ordenados = sorted(pares, key=lambda x: x['vencimiento'])
+opciones_labels = [p['label'] for p in pares_ordenados]
 
-# Índice por defecto para S30N6 vs X30N6 si existe
+# Índice por defecto para S30N6 vs X30N6
 default_idx = next(
-    (i for i, p in enumerate(pares) if p['ticker_lec'] == 'S30N6' and p['ticker_cer'] == 'X30N6'), 
+    (i for i, p in enumerate(pares_ordenados) if p['ticker_lec'] == 'S30N6' and p['ticker_cer'] == 'X30N6'), 
     0
 )
 
 par_seleccionado_label = st.sidebar.selectbox(
-    "1. Seleccione el par a comparar (Mismo Vencimiento):", 
+    "1. Seleccione el par a comparar:", 
     opciones_labels, 
     index=default_idx
 )
 
-par_info = next(p for p in pares if p['label'] == par_seleccionado_label)
+par_info = next(p for p in pares_ordenados if p['label'] == par_seleccionado_label)
 lec_ticker = par_info['ticker_lec']
 cer_ticker = par_info['ticker_cer']
 
@@ -247,13 +300,13 @@ else:
     f_desde, f_hasta = fecha_min_gen, fecha_max_gen
 
 # =========================================================
-# 4. EJECUCIÓN Y RENDERIZADO DE MÉTRICAS
+# 5. EJECUCIÓN Y RENDERIZADO DETALLADO
 # =========================================================
 res_sim = calcular_be_cer(lec_ticker, cer_ticker, precio_lec_sim, precio_cer_sim, fecha_sim, 
                           df_lec, df_cer, df_indice, feriados)
 
 if res_sim:
-    st.subheader(f"Resultados de Simulación: {lec_ticker} vs {cer_ticker}")
+    st.subheader(f"Análisis Detallado: {lec_ticker} vs {cer_ticker} (Vto: {par_info['vencimiento'].strftime('%d/%m/%Y')})")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric(label=f"TEA Fija ({lec_ticker})", value=f"{res_sim['tir_lec']*100:.2f}%")
     c2.metric(label=f"Tasa Real CER ({cer_ticker})", value=f"{res_sim['tir_real_cer']*100:.2f}%")
@@ -286,7 +339,7 @@ for _, row in df_precios_filt.iterrows():
 df_hist = pd.DataFrame(historico)
 
 # =========================================================
-# 5. GRÁFICOS INTERACTIVOS (PLOTLY)
+# 6. GRÁFICOS INTERACTIVOS (PLOTLY)
 # =========================================================
 st.markdown("---")
 st.subheader("Evolución Histórica de Métricas")
