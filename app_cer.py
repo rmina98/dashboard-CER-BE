@@ -57,6 +57,15 @@ def cargar_datos_cer():
     feriados = set(pd.to_datetime(df_feriados["Feriados"]).dt.date)
     df_indice['Fecha'] = pd.to_datetime(df_indice['Fecha']).dt.date
     df_indice = df_indice.sort_values('Fecha').reset_index(drop=True)
+    
+    # Limpieza de la curva CER: descartar filas duplicadas constantes al final
+    diffs = df_indice['CER'].diff().abs()
+    if not diffs.empty and (diffs > 0).any():
+        last_changing_idx = df_indice[diffs > 0].index[-1]
+        df_indice_clean = df_indice.loc[:last_changing_idx].copy()
+    else:
+        df_indice_clean = df_indice.copy()
+        
     df_precios['Fecha_dt'] = pd.to_datetime(df_precios['Fecha']).dt.date
 
     df_lec['Vencimiento_dt'] = pd.to_datetime(df_lec['Vencimiento']).dt.date
@@ -75,7 +84,7 @@ def cargar_datos_cer():
                     'vencimiento': vto
                 })
 
-    return df_lec, df_cer, df_precios, df_indice, df_tamar, feriados, pares
+    return df_lec, df_cer, df_precios, df_indice_clean, df_tamar, feriados, pares
 
 df_lec, df_cer, df_precios, df_indice, df_tamar, feriados, pares = cargar_datos_cer()
 
@@ -120,21 +129,48 @@ def dias360_excel(f_inicio, f_fin):
     if d2 == 31 and d1 >= 30: d2 = 30
     return (y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)
 
-def calcular_meses_cer_exactos(f_inicio, f_fin):
+def calcular_meses_efectivos_bcra(f_inicio, f_fin):
+    """
+    Calcula N_efectivo según la Com. "A" 3507 del BCRA.
+    """
+    if f_inicio >= f_fin:
+        return 0.0
+    
+    n_efectivo = 0.0
     actual = f_inicio
-    total_meses = 0.0
+    
     while actual < f_fin:
-        dias_en_mes = calendar.monthrange(actual.year, actual.month)[1]
-        if actual.year == f_fin.year and actual.month == f_fin.month:
-            dias_tramo = (f_fin - actual).days
-            total_meses += dias_tramo / dias_en_mes
-            break
+        if actual.day >= 16:
+            inicio_periodo = date(actual.year, actual.month, 16)
+            fin_periodo = date(actual.year + 1, 1, 15) if actual.month == 12 else date(actual.year, actual.month + 1, 15)
         else:
-            sig_mes = date(actual.year + (1 if actual.month == 12 else 0), 1 if actual.month == 12 else actual.month + 1, 1)
-            dias_tramo = (sig_mes - actual).days
-            total_meses += dias_tramo / dias_en_mes
-            actual = sig_mes
-    return total_meses
+            fin_periodo = date(actual.year, actual.month, 15)
+            inicio_periodo = date(actual.year - 1, 12, 16) if actual.month == 1 else date(actual.year, actual.month - 1, 16)
+        
+        dias_totales_periodo = (fin_periodo - inicio_periodo).days + 1
+        fin_tramo = min(f_fin, fin_periodo)
+        dias_en_tramo = (fin_tramo - actual).days if actual == f_inicio else (fin_tramo - actual).days + 1
+        
+        if dias_en_tramo > 0:
+            n_efectivo += dias_en_tramo / dias_totales_periodo
+        
+        actual = fin_periodo + timedelta(days=1)
+        
+    return n_efectivo
+
+def obtener_limite_cer_historico(f_op):
+    """
+    Simula lo que el mercado sabía del CER en la fecha f_op evaluada.
+    """
+    if f_op.day < 15:
+        # El CER está fijo hasta el 15 de este mes (dato IPC de 2 meses atrás)
+        return date(f_op.year, f_op.month, 15)
+    else:
+        # Ya se publicó el IPC. El CER está fijo hasta el 15 del mes que viene.
+        if f_op.month == 12:
+            return date(f_op.year + 1, 1, 15)
+        else:
+            return date(f_op.year, f_op.month + 1, 15)
 
 def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, df_indice, feriados, plazo_t=1):
     row_lec = df_lec[df_lec['Ticker'].str.strip().str.upper() == ticker_lec].iloc[0]
@@ -152,8 +188,8 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
     
     if dias_cartera_lec <= 0 or p_lec <= 0: return None
         
-    rend_lec = (vpv_lec / p_lec) - 1
-    tir_lec = ((1 + rend_lec) ** (365 / dias_cartera_lec)) - 1
+    rend_lec = (vpv_lec / p_lec) - 1.0
+    tir_lec = ((1.0 + rend_lec) ** (365.0 / dias_cartera_lec)) - 1.0
     
     f_vto_cer = pd.to_datetime(row_cer['Vencimiento']).date()
     f_cobro_cer = proximo_habil(f_vto_cer, feriados)
@@ -161,47 +197,78 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
     
     if dias_cartera_cer <= 0 or p_cer <= 0: return None
         
-    pesos_requeridos_cer = p_cer * ((1 + tir_lec) ** (dias_cartera_cer / 365))
+    pesos_requeridos_cer = p_cer * ((1.0 + tir_lec) ** (dias_cartera_cer / 365.0))
     
     cer_inicial_emision = row_cer['CER inicial']
     cupon_cer = row_cer['Tasa']
-    vpv_real = 100.0 * (1 + cupon_cer)
+    vpv_real = 100.0 * (1.0 + cupon_cer)
     cer_vto_req = (pesos_requeridos_cer / vpv_real) * cer_inicial_emision
     
     f_ref_vto = restar_dias_habiles(f_cobro_cer, 10, feriados)
-    f_ref_hoy = restar_dias_habiles(f_liq, 10, feriados)
     
+    # ---------------------------------------------------------
+    # CORTE HISTÓRICO: Evitar mirar el futuro (Look-ahead bias)
+    # ---------------------------------------------------------
+    f_limite_mercado = obtener_limite_cer_historico(f_op)
+    f_corte_conocido = min(f_ref_vto, f_limite_mercado)
+    
+    df_conocido = df_indice[df_indice['Fecha'] <= f_corte_conocido]
+    if df_conocido.empty:
+        return None
+        
+    fecha_ultimo_cer_conocido = df_conocido['Fecha'].iloc[-1]
+    cer_ultimo_conocido = df_conocido['CER'].iloc[-1]
+    
+    # CER a la fecha de referencia hoy
+    f_ref_hoy = restar_dias_habiles(f_liq, 10, feriados)
     df_hist_hoy = df_indice[df_indice['Fecha'] <= f_ref_hoy]
     cer_hoy_ref = df_hist_hoy['CER'].iloc[-1] if not df_hist_hoy.empty else cer_inicial_emision
     
     factor_real = (vpv_real * cer_hoy_ref) / (p_cer * cer_inicial_emision)
     tir_real_cer = (factor_real ** (365.0 / dias_cartera_cer)) - 1.0 if factor_real > 0 else 0.0
 
-    inflacion_total_be = (cer_vto_req / cer_hoy_ref) - 1
-    meses_exactos = calcular_meses_cer_exactos(f_ref_hoy, f_ref_vto)
-    
-    if meses_exactos > 0:
-        tem_be = ((1 + inflacion_total_be) ** (1.0 / meses_exactos)) - 1
-        tea_be = ((1 + inflacion_total_be) ** (12.0 / meses_exactos)) - 1
+    if fecha_ultimo_cer_conocido >= f_ref_vto:
+        tem_be = 0.0
+        tea_be = 0.0
     else:
-        tem_be, tea_be = 0.0, 0.0
-        
+        # Los meses "N" ahora son los que realmente el mercado NO conocía en f_op
+        n_efectivo_futuro = calcular_meses_efectivos_bcra(fecha_ultimo_cer_conocido, f_ref_vto)
+        if n_efectivo_futuro > 0 and cer_ultimo_conocido > 0:
+            tem_be = ((cer_vto_req / cer_ultimo_conocido) ** (1.0 / n_efectivo_futuro)) - 1.0
+            tea_be = ((1.0 + tem_be) ** 12.0) - 1.0
+        else:
+            tem_be, tea_be = 0.0, 0.0
+
+    inflacion_total_be = (cer_vto_req / cer_hoy_ref) - 1.0
+
     return {
         'fecha_op': f_op, 'vpv_lec': vpv_lec, 'tir_lec': tir_lec,
         'pesos_req_cer': pesos_requeridos_cer, 'cer_hoy_ref': cer_hoy_ref,
         'cer_vto_req': cer_vto_req, 'f_ref_hoy': f_ref_hoy, 'f_ref_vto': f_ref_vto,
-        'meses_exactos': meses_exactos, 'infla_total': inflacion_total_be,
+        'infla_total': inflacion_total_be,
         'tem_be': tem_be, 'tea_be': tea_be, 'tir_real_cer': tir_real_cer
     }
 
 # =========================================================
-# 3. TABLA DE RESUMEN GENERAL (SIMPLIFICADA Y ORDENADA POR VTO)
+# 3. TABLA DE RESUMEN GENERAL (ORDENADA POR VENCIMIENTO)
 # =========================================================
 ultima_fila = df_precios.iloc[-1]
 fecha_sim = ultima_fila['Fecha_dt']
 
+st.sidebar.header("Parámetros de Simulación")
+st.sidebar.write(f"**Fecha del último dato:** {fecha_sim.strftime('%d/%m/%Y')}")
+
+# Selector de Plazo de Liquidación
+plazo_opciones = {"T+0 (Contado Inmediato)": 0, "T+1 (24hs)": 1, "T+2 (48hs)": 2}
+plazo_label = st.sidebar.selectbox("Plazo de Liquidación:", list(plazo_opciones.keys()), index=1)
+plazo_t_selected = plazo_opciones[plazo_label]
+
+st.sidebar.markdown("---")
+
+pares_ordenados = sorted(pares, key=lambda x: x['vencimiento'])
+
 resumen_list = []
-for p in pares:
+for p in pares_ordenados:
     t_lec, t_cer = p['ticker_lec'], p['ticker_cer']
     val_l_r = ultima_fila[t_lec] if t_lec in ultima_fila else None
     val_c_r = ultima_fila[t_cer] if t_cer in ultima_fila else None
@@ -209,7 +276,7 @@ for p in pares:
     if pd.notnull(val_l_r) and pd.notnull(val_c_r):
         px_l = val_l_r * 100 if val_l_r < 10 else val_l_r
         px_c = val_c_r * 100 if val_c_r < 10 else val_c_r
-        r_all = calcular_be_cer(t_lec, t_cer, px_l, px_c, fecha_sim, df_lec, df_cer, df_indice, feriados)
+        r_all = calcular_be_cer(t_lec, t_cer, px_l, px_c, fecha_sim, df_lec, df_cer, df_indice, feriados, plazo_t=plazo_t_selected)
         if r_all:
             resumen_list.append({
                 'Vencimiento_dt': p['vencimiento'],
@@ -221,15 +288,12 @@ for p in pares:
             })
 
 df_resumen = pd.DataFrame(resumen_list)
-if not df_resumen.empty:
-    df_resumen = df_resumen.sort_values('Vencimiento_dt').reset_index(drop=True)
 
 st.subheader("Resumen de Mercado: Break-Even por Vencimiento")
-st.caption(f"Calculado al último cierre disponible ({fecha_sim.strftime('%d/%m/%Y')}):")
+st.caption(f"Calculado al último cierre disponible ({fecha_sim.strftime('%d/%m/%Y')}) en **{plazo_label}**:")
 
 if not df_resumen.empty:
     df_tabla_show = df_resumen[['Vencimiento', 'Tasa Fija', 'CER', 'TEM BE (%)', 'TEA BE (%)']]
-    
     st.dataframe(
         df_tabla_show.style.format({
             'TEM BE (%)': '{:.2f}%',
@@ -244,14 +308,8 @@ st.markdown("---")
 # =========================================================
 # 4. BARRA LATERAL Y DETALLE DE ESPECIE
 # =========================================================
-st.sidebar.header("Parámetros de Simulación")
-st.sidebar.write(f"**Fecha del último dato:** {fecha_sim.strftime('%d/%m/%Y')}")
-
-# Ordenar las opciones de la barra lateral por vencimiento
-pares_ordenados = sorted(pares, key=lambda x: x['vencimiento'])
 opciones_labels = [p['label'] for p in pares_ordenados]
 
-# Índice por defecto para S30N6 vs X30N6
 default_idx = next(
     (i for i, p in enumerate(pares_ordenados) if p['ticker_lec'] == 'S30N6' and p['ticker_cer'] == 'X30N6'), 
     0
@@ -273,7 +331,6 @@ val_c = ultima_fila[cer_ticker] if cer_ticker in df_precios.columns else 100.0
 def_p_l = float(val_l * 100 if pd.notnull(val_l) and val_l < 10 else val_l)
 def_p_c = float(val_c * 100 if pd.notnull(val_c) and val_c < 10 else val_c)
 
-st.sidebar.markdown("---")
 precio_lec_sim = st.sidebar.number_input(f"Precio {lec_ticker} (Tasa Fija):", value=def_p_l, step=0.10, format="%.2f")
 precio_cer_sim = st.sidebar.number_input(f"Precio {cer_ticker} (CER):", value=def_p_c, step=0.10, format="%.2f")
 
@@ -295,10 +352,10 @@ else:
 # 5. EJECUCIÓN Y RENDERIZADO DETALLADO
 # =========================================================
 res_sim = calcular_be_cer(lec_ticker, cer_ticker, precio_lec_sim, precio_cer_sim, fecha_sim, 
-                          df_lec, df_cer, df_indice, feriados)
+                          df_lec, df_cer, df_indice, feriados, plazo_t=plazo_t_selected)
 
 if res_sim:
-    st.subheader(f"Análisis Detallado: {lec_ticker} vs {cer_ticker} (Vto: {par_info['vencimiento'].strftime('%d/%m/%Y')})")
+    st.subheader(f"Análisis Detallado: {lec_ticker} vs {cer_ticker} (Vto: {par_info['vencimiento'].strftime('%d/%m/%Y')} - {plazo_label})")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric(label=f"TEA Fija ({lec_ticker})", value=f"{res_sim['tir_lec']*100:.2f}%")
     c2.metric(label=f"Tasa Real CER ({cer_ticker})", value=f"{res_sim['tir_real_cer']*100:.2f}%")
@@ -319,7 +376,7 @@ for _, row in df_precios_filt.iterrows():
         p_l = p_l_raw * 100 if p_l_raw < 10 else p_l_raw
         p_c = p_c_raw * 100 if p_c_raw < 10 else p_c_raw
         
-        r = calcular_be_cer(lec_ticker, cer_ticker, p_l, p_c, f_o, df_lec, df_cer, df_indice, feriados)
+        r = calcular_be_cer(lec_ticker, cer_ticker, p_l, p_c, f_o, df_lec, df_cer, df_indice, feriados, plazo_t=plazo_t_selected)
         if r:
             if not df_tamar.empty:
                 tamar_sub = df_tamar[df_tamar['Fecha_dt'] <= f_o]
