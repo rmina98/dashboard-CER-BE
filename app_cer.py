@@ -6,6 +6,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+import requests  # <-- NUEVO IMPORT NECESARIO PARA LA API
 
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
@@ -130,9 +131,6 @@ def dias360_excel(f_inicio, f_fin):
     return (y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)
 
 def calcular_meses_efectivos_bcra(f_inicio, f_fin):
-    """
-    Calcula N_efectivo según la Com. "A" 3507 del BCRA.
-    """
     if f_inicio >= f_fin:
         return 0.0
     
@@ -159,14 +157,9 @@ def calcular_meses_efectivos_bcra(f_inicio, f_fin):
     return n_efectivo
 
 def obtener_limite_cer_historico(f_op):
-    """
-    Simula lo que el mercado sabía del CER en la fecha f_op evaluada.
-    """
     if f_op.day < 15:
-        # El CER está fijo hasta el 15 de este mes (dato IPC de 2 meses atrás)
         return date(f_op.year, f_op.month, 15)
     else:
-        # Ya se publicó el IPC. El CER está fijo hasta el 15 del mes que viene.
         if f_op.month == 12:
             return date(f_op.year + 1, 1, 15)
         else:
@@ -206,9 +199,6 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
     
     f_ref_vto = restar_dias_habiles(f_cobro_cer, 10, feriados)
     
-    # ---------------------------------------------------------
-    # CORTE HISTÓRICO: Evitar mirar el futuro (Look-ahead bias)
-    # ---------------------------------------------------------
     f_limite_mercado = obtener_limite_cer_historico(f_op)
     f_corte_conocido = min(f_ref_vto, f_limite_mercado)
     
@@ -219,7 +209,6 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
     fecha_ultimo_cer_conocido = df_conocido['Fecha'].iloc[-1]
     cer_ultimo_conocido = df_conocido['CER'].iloc[-1]
     
-    # CER a la fecha de referencia hoy
     f_ref_hoy = restar_dias_habiles(f_liq, 10, feriados)
     df_hist_hoy = df_indice[df_indice['Fecha'] <= f_ref_hoy]
     cer_hoy_ref = df_hist_hoy['CER'].iloc[-1] if not df_hist_hoy.empty else cer_inicial_emision
@@ -231,7 +220,6 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
         tem_be = 0.0
         tea_be = 0.0
     else:
-        # Los meses "N" ahora son los que realmente el mercado NO conocía en f_op
         n_efectivo_futuro = calcular_meses_efectivos_bcra(fecha_ultimo_cer_conocido, f_ref_vto)
         if n_efectivo_futuro > 0 and cer_ultimo_conocido > 0:
             tem_be = ((cer_vto_req / cer_ultimo_conocido) ** (1.0 / n_efectivo_futuro)) - 1.0
@@ -250,13 +238,78 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
     }
 
 # =========================================================
-# 3. TABLA DE RESUMEN GENERAL (ORDENADA POR VENCIMIENTO)
+# 3. TABLA DE RESUMEN GENERAL E INTEGRACIÓN CON 1816 API
 # =========================================================
-ultima_fila = df_precios.iloc[-1]
+# Función protegida por caché (5 min) para no gastar de más los créditos
+@st.cache_data(ttl=300)
+def obtener_precios_1816(lista_tickers):
+    # La API Key entregada (Recordá regenerarla luego por seguridad)
+    api_key_1816 = "25a792a5ce74054a5bed8a559c27f98aa651472a59d73810e33553feee0b31ef"
+    
+    try:
+        # 1. Obtener Token
+        auth = requests.post(
+            "https://api.1816.com.ar/v1/auth/token",
+            json={"apiKey": api_key_1816, "module": "mercado"},
+            timeout=10
+        )
+        auth.raise_for_status()
+        token = auth.json()["token"]
+
+        # 2. Consultar Precios
+        url = "https://api.1816.com.ar/v1/mercado/indicadores"
+        params = {
+            "tickers": [t.lower() for t in lista_tickers],
+            "campos": ["precioDirty"]
+        }
+        
+        response = requests.get(url, headers={"Authorization": f"Bearer {token}"}, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # 3. Formatear la respuesta { "S30N6": 120.5, "TZX25": 115.3 }
+        precios_dict = {}
+        if isinstance(data, dict): # Si devuelve un diccionario
+            for k, v in data.items():
+                if isinstance(v, dict) and "precioDirty" in v:
+                    precios_dict[k.upper()] = float(v["precioDirty"])
+        elif isinstance(data, list): # Si devuelve una lista de diccionarios
+            for item in data:
+                t = item.get("ticker", item.get("symbol", ""))
+                if "precioDirty" in item:
+                    precios_dict[t.upper()] = float(item["precioDirty"])
+                    
+        return precios_dict
+    except Exception as e:
+        return None
+
+
+# Clonamos la última fila para que sea editable
+ultima_fila = df_precios.iloc[-1].copy()
 fecha_sim = ultima_fila['Fecha_dt']
 
 st.sidebar.header("Parámetros de Simulación")
-st.sidebar.write(f"**Fecha del último dato:** {fecha_sim.strftime('%d/%m/%Y')}")
+
+# ---- CHECKBOX MAGICO DE 1816 ----
+usar_api = st.sidebar.checkbox("⚡ Usar precios en VIVO (API 1816)", value=False)
+
+if usar_api:
+    # Recolectamos todos los tickers existentes en nuestra base
+    todos_los_tickers = list(set([p['ticker_lec'] for p in pares] + [p['ticker_cer'] for p in pares]))
+    
+    with st.sidebar.status("Conectando con 1816...", expanded=False) as status:
+        precios_vivo = obtener_precios_1816(todos_los_tickers)
+        if precios_vivo:
+            status.update(label="✅ Precios obtenidos de 1816", state="complete", expanded=False)
+            fecha_sim = datetime.now().date() # Forzamos que la tabla principal diga la fecha de HOY
+            # Pisamos los precios del excel con los de la API
+            for t_api, px_api in precios_vivo.items():
+                ultima_fila[t_api] = px_api
+        else:
+            status.update(label="❌ Falló la conexión API, usando Excel", state="error", expanded=False)
+# ---------------------------------
+
+st.sidebar.write(f"**Fecha del precio utilizado:** {fecha_sim.strftime('%d/%m/%Y')}")
 
 # Selector de Plazo de Liquidación
 plazo_opciones = {"T+0 (Contado Inmediato)": 0, "T+1 (24hs)": 1, "T+2 (48hs)": 2}
@@ -290,7 +343,8 @@ for p in pares_ordenados:
 df_resumen = pd.DataFrame(resumen_list)
 
 st.subheader("Resumen de Mercado: Break-Even por Vencimiento")
-st.caption(f"Calculado al último cierre disponible ({fecha_sim.strftime('%d/%m/%Y')}) en **{plazo_label}**:")
+origen_texto = "API 1816 (Tiempo Real)" if usar_api else "Excel"
+st.caption(f"Calculado con origen de datos: **{origen_texto}** al {fecha_sim.strftime('%d/%m/%Y')} en **{plazo_label}**:")
 
 if not df_resumen.empty:
     df_tabla_show = df_resumen[['Vencimiento', 'Tasa Fija', 'CER', 'TEM BE (%)', 'TEA BE (%)']]
@@ -325,8 +379,8 @@ par_info = next(p for p in pares_ordenados if p['label'] == par_seleccionado_lab
 lec_ticker = par_info['ticker_lec']
 cer_ticker = par_info['ticker_cer']
 
-val_l = ultima_fila[lec_ticker] if lec_ticker in df_precios.columns else 100.0
-val_c = ultima_fila[cer_ticker] if cer_ticker in df_precios.columns else 100.0
+val_l = ultima_fila[lec_ticker] if lec_ticker in ultima_fila else 100.0
+val_c = ultima_fila[cer_ticker] if cer_ticker in ultima_fila else 100.0
 
 def_p_l = float(val_l * 100 if pd.notnull(val_l) and val_l < 10 else val_l)
 def_p_c = float(val_c * 100 if pd.notnull(val_c) and val_c < 10 else val_c)
