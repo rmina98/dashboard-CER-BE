@@ -243,7 +243,6 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
 # Función protegida por caché (5 min) para no gastar de más los créditos
 @st.cache_data(ttl=300)
 def obtener_precios_1816(lista_tickers):
-    # La API Key entregada (Recordá regenerarla luego por seguridad)
     api_key_1816 = "25a792a5ce74054a5bed8a559c27f98aa651472a59d73810e33553feee0b31ef"
     
     try:
@@ -258,8 +257,11 @@ def obtener_precios_1816(lista_tickers):
 
         # 2. Consultar Precios
         url = "https://api.1816.com.ar/v1/mercado/indicadores"
+        # Aseguramos formato minúscula sin espacios
+        tickers_limpios = [t.strip().lower() for t in lista_tickers]
+        
         params = {
-            "tickers": [t.lower() for t in lista_tickers],
+            "tickers": tickers_limpios,
             "campos": ["precioDirty"]
         }
         
@@ -267,22 +269,33 @@ def obtener_precios_1816(lista_tickers):
         response.raise_for_status()
         data = response.json()
         
-        # 3. Formatear la respuesta { "S30N6": 120.5, "TZX25": 115.3 }
+        # 3. Formatear la respuesta
         precios_dict = {}
-        if isinstance(data, dict): # Si devuelve un diccionario
+        if isinstance(data, dict):
             for k, v in data.items():
                 if isinstance(v, dict) and "precioDirty" in v:
                     precios_dict[k.upper()] = float(v["precioDirty"])
-        elif isinstance(data, list): # Si devuelve una lista de diccionarios
+        elif isinstance(data, list):
             for item in data:
                 t = item.get("ticker", item.get("symbol", ""))
                 if "precioDirty" in item:
                     precios_dict[t.upper()] = float(item["precioDirty"])
                     
+        # Si la API respondió 200 OK pero no encontró datos
+        if not precios_dict:
+            st.sidebar.error(f"⚠️ La API respondió bien, pero el diccionario está vacío. Data cruda: {data}")
+            return None
+            
         return precios_dict
-    except Exception as e:
-        return None
 
+    except requests.exceptions.HTTPError as errh:
+        # Error específico del servidor (Ej: 401 no autorizado, 400 mal formulado)
+        st.sidebar.error(f"🛑 Error HTTP: {errh.response.status_code} - {errh.response.text}")
+        return None
+    except Exception as e:
+        # Cualquier otro error (ej. se cortó internet, fallo de python)
+        st.sidebar.error(f"⚠️ Error interno en la consulta: {str(e)}")
+        return None
 
 # Clonamos la última fila para que sea editable
 ultima_fila = df_precios.iloc[-1].copy()
@@ -294,70 +307,18 @@ st.sidebar.header("Parámetros de Simulación")
 usar_api = st.sidebar.checkbox("⚡ Usar precios en VIVO (API 1816)", value=False)
 
 if usar_api:
-    # Recolectamos todos los tickers existentes en nuestra base
     todos_los_tickers = list(set([p['ticker_lec'] for p in pares] + [p['ticker_cer'] for p in pares]))
     
-    with st.sidebar.status("Conectando con 1816...", expanded=False) as status:
+    with st.sidebar.status("Conectando con 1816...", expanded=True) as status: # Expanded = True para ver errores
         precios_vivo = obtener_precios_1816(todos_los_tickers)
         if precios_vivo:
             status.update(label="✅ Precios obtenidos de 1816", state="complete", expanded=False)
-            fecha_sim = datetime.now().date() # Forzamos que la tabla principal diga la fecha de HOY
-            # Pisamos los precios del excel con los de la API
+            fecha_sim = datetime.now().date() 
             for t_api, px_api in precios_vivo.items():
                 ultima_fila[t_api] = px_api
         else:
-            status.update(label="❌ Falló la conexión API, usando Excel", state="error", expanded=False)
+            status.update(label="❌ Falló la conexión API, usando Excel", state="error", expanded=True)
 # ---------------------------------
-
-st.sidebar.write(f"**Fecha del precio utilizado:** {fecha_sim.strftime('%d/%m/%Y')}")
-
-# Selector de Plazo de Liquidación
-plazo_opciones = {"T+0 (Contado Inmediato)": 0, "T+1 (24hs)": 1, "T+2 (48hs)": 2}
-plazo_label = st.sidebar.selectbox("Plazo de Liquidación:", list(plazo_opciones.keys()), index=1)
-plazo_t_selected = plazo_opciones[plazo_label]
-
-st.sidebar.markdown("---")
-
-pares_ordenados = sorted(pares, key=lambda x: x['vencimiento'])
-
-resumen_list = []
-for p in pares_ordenados:
-    t_lec, t_cer = p['ticker_lec'], p['ticker_cer']
-    val_l_r = ultima_fila[t_lec] if t_lec in ultima_fila else None
-    val_c_r = ultima_fila[t_cer] if t_cer in ultima_fila else None
-    
-    if pd.notnull(val_l_r) and pd.notnull(val_c_r):
-        px_l = val_l_r * 100 if val_l_r < 10 else val_l_r
-        px_c = val_c_r * 100 if val_c_r < 10 else val_c_r
-        r_all = calcular_be_cer(t_lec, t_cer, px_l, px_c, fecha_sim, df_lec, df_cer, df_indice, feriados, plazo_t=plazo_t_selected)
-        if r_all:
-            resumen_list.append({
-                'Vencimiento_dt': p['vencimiento'],
-                'Vencimiento': p['vencimiento'].strftime('%d/%m/%Y'),
-                'Tasa Fija': t_lec,
-                'CER': t_cer,
-                'TEM BE (%)': r_all['tem_be'] * 100,
-                'TEA BE (%)': r_all['tea_be'] * 100
-            })
-
-df_resumen = pd.DataFrame(resumen_list)
-
-st.subheader("Resumen de Mercado: Break-Even por Vencimiento")
-origen_texto = "API 1816 (Tiempo Real)" if usar_api else "Excel"
-st.caption(f"Calculado con origen de datos: **{origen_texto}** al {fecha_sim.strftime('%d/%m/%Y')} en **{plazo_label}**:")
-
-if not df_resumen.empty:
-    df_tabla_show = df_resumen[['Vencimiento', 'Tasa Fija', 'CER', 'TEM BE (%)', 'TEA BE (%)']]
-    st.dataframe(
-        df_tabla_show.style.format({
-            'TEM BE (%)': '{:.2f}%',
-            'TEA BE (%)': '{:.2f}%'
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
-
-st.markdown("---")
 
 # =========================================================
 # 4. BARRA LATERAL Y DETALLE DE ESPECIE
