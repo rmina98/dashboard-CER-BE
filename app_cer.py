@@ -6,7 +6,6 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
-import requests
 
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
@@ -251,56 +250,12 @@ def calcular_be_cer(ticker_lec, ticker_cer, p_lec, p_cer, f_op, df_lec, df_cer, 
     }
 
 # =========================================================
-# NUEVA FUNCIÓN PARA 1816 AISLADA
-# =========================================================
-@st.cache_data(ttl=300)
-def obtener_precios_1816(lista_tickers):
-    api_key_1816 = "25a792a5ce74054a5bed8a559c27f98aa651472a59d73810e33553feee0b31ef"
-    try:
-        auth = requests.post("https://api.1816.com.ar/v1/auth/token", json={"apiKey": api_key_1816, "module": "mercado"}, timeout=10)
-        auth.raise_for_status()
-        token = auth.json()["token"]
-
-        url = "https://api.1816.com.ar/v1/mercado/indicadores"
-        tickers_limpios = [t.strip().lower() for t in lista_tickers]
-        params = {"tickers": tickers_limpios, "campos": ["precioDirty"]}
-        
-        response = requests.get(url, headers={"Authorization": f"Bearer {token}"}, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        precios_dict = {}
-        if isinstance(data, dict) and "instrumentos" in data:
-            for ticker, valores in data["instrumentos"].items():
-                if isinstance(valores, dict) and "precioDirty" in valores:
-                    precios_dict[ticker.upper()] = float(valores["precioDirty"])
-        return precios_dict if precios_dict else None
-    except:
-        return None
-
-# =========================================================
 # 3. TABLA DE RESUMEN GENERAL (ORDENADA POR VENCIMIENTO)
 # =========================================================
 ultima_fila = df_precios.iloc[-1]
 fecha_sim = ultima_fila['Fecha_dt']
 
 st.sidebar.header("Parámetros de Simulación")
-
-# --- BLOQUE DE API EN LA BARRA LATERAL ---
-usar_api = st.sidebar.checkbox("⚡ Usar precios en VIVO (API 1816)", value=False)
-precios_vivo = {}
-if usar_api:
-    todos_los_tickers = list(set([p['ticker_lec'] for p in pares] + [p['ticker_cer'] for p in pares]))
-    with st.sidebar.status("Conectando con 1816..."):
-        precios_vivo = obtener_precios_1816(todos_los_tickers)
-        if precios_vivo:
-            st.sidebar.success("✅ Precios 1816 obtenidos.")
-            fecha_sim = datetime.now().date()
-        else:
-            st.sidebar.error("❌ Falló API. Usando Excel.")
-            precios_vivo = {}
-# -----------------------------------------
-
 st.sidebar.write(f"**Fecha del último dato:** {fecha_sim.strftime('%d/%m/%Y')}")
 
 # Selector de Plazo de Liquidación
@@ -315,10 +270,8 @@ pares_ordenados = sorted(pares, key=lambda x: x['vencimiento'])
 resumen_list = []
 for p in pares_ordenados:
     t_lec, t_cer = p['ticker_lec'], p['ticker_cer']
-    
-    # REEMPLAZO SEGURO Y LOCAL: Si la API está activa y trajo datos, los uso. Si no, uso el Excel (ultima_fila)
-    val_l_r = precios_vivo.get(t_lec) if (usar_api and precios_vivo) else (ultima_fila[t_lec] if t_lec in ultima_fila else None)
-    val_c_r = precios_vivo.get(t_cer) if (usar_api and precios_vivo) else (ultima_fila[t_cer] if t_cer in ultima_fila else None)
+    val_l_r = ultima_fila[t_lec] if t_lec in ultima_fila else None
+    val_c_r = ultima_fila[t_cer] if t_cer in ultima_fila else None
     
     if pd.notnull(val_l_r) and pd.notnull(val_c_r):
         px_l = val_l_r * 100 if val_l_r < 10 else val_l_r
@@ -372,9 +325,8 @@ par_info = next(p for p in pares_ordenados if p['label'] == par_seleccionado_lab
 lec_ticker = par_info['ticker_lec']
 cer_ticker = par_info['ticker_cer']
 
-# REEMPLAZO SEGURO Y LOCAL para las cajas de input
-val_l = precios_vivo.get(lec_ticker) if (usar_api and precios_vivo) else (ultima_fila[lec_ticker] if lec_ticker in df_precios.columns else 100.0)
-val_c = precios_vivo.get(cer_ticker) if (usar_api and precios_vivo) else (ultima_fila[cer_ticker] if cer_ticker in df_precios.columns else 100.0)
+val_l = ultima_fila[lec_ticker] if lec_ticker in df_precios.columns else 100.0
+val_c = ultima_fila[cer_ticker] if cer_ticker in df_precios.columns else 100.0
 
 def_p_l = float(val_l * 100 if pd.notnull(val_l) and val_l < 10 else val_l)
 def_p_c = float(val_c * 100 if pd.notnull(val_c) and val_c < 10 else val_c)
